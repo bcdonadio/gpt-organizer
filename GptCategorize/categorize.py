@@ -38,13 +38,13 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", None)  # usually not needed for local
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "chatgpt_titles")
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "chatgpt_chats")
 
 # Temporal cohesion timescale (days). This is not exposed as a CLI flag; tweak here if needed.
 TIME_DECAY_DAYS = float(os.environ.get("TIME_DECAY_DAYS", 30))
 
 # Timeout configurations
-OPENAI_TIMEOUT = float(os.environ.get("OPENAI_TIMEOUT", 300))  # 5 minutes
+OPENAI_TIMEOUT = float(os.environ.get("OPENAI_TIMEOUT", 600))  # 10 minutes
 QDRANT_TIMEOUT = float(os.environ.get("QDRANT_TIMEOUT", 600))  # 10 minutes
 QDRANT_BATCH_SIZE = int(os.environ.get("QDRANT_BATCH_SIZE", 100))  # batch size for upserts
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", 3))
@@ -341,14 +341,14 @@ def get_embedding_client() -> OpenAI:
     return client
 
 
-def embed_titles_with_retry(embed_client: OpenAI, titles: List[str], batch_size: int = 96) -> np.ndarray:
-    """Embed titles with retry logic and timeout handling."""
-    logger.info(f"Starting embedding process for {len(titles)} titles in batches of {batch_size}")
+def embed_chats_with_retry(embed_client: OpenAI, chats: List[str], batch_size: int = 96) -> np.ndarray:
+    """Embed chats with retry logic and timeout handling."""
+    logger.info(f"Starting embedding process for {len(chats)} chats in batches of {batch_size}")
     vecs: List[List[float]] = []
 
-    for i in tqdm(range(0, len(titles), batch_size), desc="Embedding titles"):
-        batch = titles[i : i + batch_size]
-        logger.debug(f"Processing batch {i//batch_size + 1}: {len(batch)} titles")
+    for i in tqdm(range(0, len(chats), batch_size), desc="Embedding chats"):
+        batch = chats[i : i + batch_size]
+        logger.debug(f"Processing batch {i//batch_size + 1}: {len(batch)} chats")
 
         # Retry logic for embedding API calls
         for attempt in range(MAX_RETRIES):
@@ -392,12 +392,6 @@ def embed_titles_with_retry(embed_client: OpenAI, titles: List[str], batch_size:
     if arr.ndim != 2 or arr.shape[1] == 0:
         raise RuntimeError("Empty embeddings returned.")
     return arr
-
-
-# Keep original function for backward compatibility
-def embed_titles(embed_client: OpenAI, titles: List[str], batch_size: int = 96) -> np.ndarray:
-    return embed_titles_with_retry(embed_client, titles, batch_size)
-
 
 # =====================
 # Qdrant Persistence
@@ -787,7 +781,7 @@ def categorize_chats(
 
     # 4) Embeddings
     texts = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats]
-    vectors = embed_titles(embed_client, texts)
+    vectors = embed_chats_with_retry(embed_client, texts)
 
     # 5) Optional: persist to Qdrant
     if not no_qdrant:
@@ -930,10 +924,10 @@ def categorize_chats(
         f"Clusters: {len(cluster_descs)} | Proposed moves: {len(proposed_moves)} | "
         f"Singletons: {len(singletons)} | Pre-assigned skipped: {len(skipped_already)}"
     )
-    for pm in proposed_moves[:12]:
+    for pm in proposed_moves[:50]:
         print(f"  -> {pm['project_title']} [{pm['project_folder_slug']}] : " f"{len(pm['chats'])} chats")
-    if len(proposed_moves) > 12:
-        print(f"  ... and {len(proposed_moves)-12} more")
+    if len(proposed_moves) > 50:
+        print(f"  ... and {len(proposed_moves)-50} more")
 
     return 0
 
