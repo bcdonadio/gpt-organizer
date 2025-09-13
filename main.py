@@ -9,9 +9,10 @@ What this program does
    - Export your data from ChatGPT, unzip it yourself, then pass the path to a
      JSON file that contains the conversation objects (commonly `conversations.json`).
 2) Skips any chats already assigned to a project/workspace/folder.
-3) Creates embeddings for titles with **text-embedding-3-large** (using a dedicated
+3) Creates embeddings for each chat's title plus the first 250 words of the
+   initial user prompt using **text-embedding-3-large** (via a dedicated
    Embeddings API base/key), and optionally persists vectors into local **Qdrant**.
-4) Clusters titles (DBSCAN over L2-normalized embeddings ≈ cosine distance),
+4) Clusters chats (DBSCAN over L2-normalized embeddings ≈ cosine distance),
    falling back to KMeans if DBSCAN yields nothing useful.
 5) Uses **gpt-5-mini** (via a separate Inference API base/key) to label clusters
    and propose project folder slugs.

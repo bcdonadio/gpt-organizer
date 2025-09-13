@@ -1,8 +1,8 @@
 """
-GptCategorize package for categorizing ChatGPT chats by title.
+GptCategorize package for categorizing ChatGPT chats by title and initial prompt.
 
 This package provides functionality to analyze ChatGPT conversation exports,
-cluster similar chats by title using embeddings and machine learning,
+cluster similar chats by title and the first user prompt using embeddings and machine learning,
 and generate provisional move plans for organizing chats into project folders.
 """
 
