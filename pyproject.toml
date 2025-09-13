@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatgpt-organizer"
+description = "Organize ChatGPT conversations into projects"
+dynamic = ["version"]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+authors = [
+    {name = "Bernardo Donadio", email = "bcdonadio@bcdonadio.com"}
+]
+maintainers = [
+    {name = "Bernardo Donadio", email = "bcdonadio@bcdonadio.com"}
+]
+keywords = ["chatgpt", "organization", "ai", "clustering", "conversation", "project-management"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Chat",
+    "Topic :: Office/Business :: Groupware",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "tqdm>=4.65.0",
+    "scikit-learn>=1.3.0",
+    "openai>=1.0.0",
+    "qdrant-client>=1.7.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/example/chatgpt-organizer"
+Repository = "https://github.com/example/chatgpt-organizer"
+Documentation = "https://github.com/example/chatgpt-organizer#readme"
+Issues = "https://github.com/example/chatgpt-organizer/issues"
+Changelog = "https://github.com/example/chatgpt-organizer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+categorize = "GptCategorize:main"
+move = "GptMove:main"
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "flake8>=7.3.0",
+    "mypy>=1.18.1",
+    "pytest>=8.4.2",
+    "types-tqdm>=4.67.0.20250809",
+    "debugpy>=1.8.0",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["GptCategorize*", "GptMove*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py313']
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+show_error_codes = true
+
+[tool.flake8]
+max-line-length = 120
+ignore = ["E203", "W503", "E226"]
+exclude = [".git", "__pycache__", ".eggs", "*.egg-info", ".mypy_cache", "build", "dist", ".venv"]
