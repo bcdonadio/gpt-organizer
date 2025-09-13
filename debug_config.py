@@ -13,10 +13,7 @@ from typing import Type
 
 
 def start_debug_server(
-    host: str = "localhost",
-    port: int = 5678,
-    wait_for_client: bool = False,
-    log_to_stderr: bool = False
+    host: str = "localhost", port: int = 5678, wait_for_client: bool = False, log_to_stderr: bool = False
 ) -> None:
     """
     Start the debugpy debug server.
@@ -52,9 +49,7 @@ def enable_debugging_on_exception() -> None:
     """
 
     def excepthook(
-        exc_type: Type[BaseException],
-        exc_value: BaseException,
-        exc_traceback: TracebackType | None
+        exc_type: Type[BaseException], exc_value: BaseException, exc_traceback: TracebackType | None
     ) -> None:
         if exc_type is KeyboardInterrupt:
             # Don't debug keyboard interrupts
@@ -112,10 +107,10 @@ def auto_start_if_enabled() -> None:
         DEBUGPY_PORT: Port to bind to (default: 5678)
         DEBUGPY_WAIT: Set to '1', 'true', 'yes' to wait for client
     """
-    if os.environ.get('DEBUGPY_ENABLE', '').lower() in ('1', 'true', 'yes'):
-        host = os.environ.get('DEBUGPY_HOST', 'localhost')
-        port = int(os.environ.get('DEBUGPY_PORT', '5678'))
-        wait = os.environ.get('DEBUGPY_WAIT', '').lower() in ('1', 'true', 'yes')
+    if os.environ.get("DEBUGPY_ENABLE", "").lower() in ("1", "true", "yes"):
+        host = os.environ.get("DEBUGPY_HOST", "localhost")
+        port = int(os.environ.get("DEBUGPY_PORT", "5678"))
+        wait = os.environ.get("DEBUGPY_WAIT", "").lower() in ("1", "true", "yes")
 
         start_debug_server(host=host, port=port, wait_for_client=wait)
 
@@ -136,16 +131,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    start_debug_server(
-        host=args.host,
-        port=args.port,
-        wait_for_client=args.wait,
-        log_to_stderr=args.log
-    )
+    start_debug_server(host=args.host, port=args.port, wait_for_client=args.wait, log_to_stderr=args.log)
 
     print("Debug server running. Press Ctrl+C to stop.")
     try:
         import time
+
         while True:
             time.sleep(1)
     except KeyboardInterrupt:

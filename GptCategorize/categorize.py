@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -61,7 +61,7 @@ LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG" if VERBOSE_LOGGING else "INFO")
 def setup_logging() -> None:
     """Configure comprehensive logging including HTTP debugging."""
     # Validate LOG_LEVEL before using it
-    valid_levels = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
+    valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
     if LOG_LEVEL.upper() not in valid_levels:
         print(f"Warning: Invalid LOG_LEVEL '{LOG_LEVEL}', defaulting to INFO")
         level = logging.INFO
@@ -70,9 +70,7 @@ def setup_logging() -> None:
 
     # Configure root logger
     logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     if VERBOSE_LOGGING:
@@ -85,6 +83,7 @@ def setup_logging() -> None:
         # Add urllib3 debug logging for even more detail
         try:
             import urllib3
+
             urllib3.disable_warnings()
             logging.getLogger("urllib3").setLevel(logging.DEBUG)
         except ImportError:
@@ -131,6 +130,7 @@ logger = logging.getLogger(__name__)
 class Chat:
     id: str
     title: str
+    prompt_excerpt: Optional[str] = None
     create_time: Optional[float] = None
     update_time: Optional[float] = None
     project_id: Optional[str] = None  # any value means: already in a project
@@ -199,6 +199,50 @@ def _detect_projectish(obj: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _first_user_prompt(obj: Dict[str, Any], max_words: int = 250) -> Optional[str]:
+    """Extract the first user message truncated to ``max_words`` words."""
+    messages: List[Dict[str, Any]] = []
+
+    msgs = obj.get("messages")
+    if isinstance(msgs, list):
+        messages.extend([m for m in msgs if isinstance(m, dict)])
+
+    mapping = obj.get("mapping")
+    if isinstance(mapping, dict):
+        for v in mapping.values():
+            msg = v.get("message") if isinstance(v, dict) else None
+            if isinstance(msg, dict):
+                messages.append(msg)
+
+    user_msgs: List[Tuple[Optional[float], str]] = []
+    for m in messages:
+        author = m.get("author")
+        role = author.get("role") if isinstance(author, dict) else None
+        if role != "user":
+            continue
+        text = ""
+        content = m.get("content")
+        if isinstance(content, dict):
+            parts = content.get("parts")
+            if isinstance(parts, list):
+                text = " ".join(str(p) for p in parts if isinstance(p, str))
+            elif isinstance(content.get("text"), str):
+                text = str(content.get("text"))
+        elif isinstance(content, str):
+            text = content
+        if not text:
+            continue
+        ct = to_epoch(m.get("create_time"))
+        user_msgs.append((ct, text))
+
+    if not user_msgs:
+        return None
+
+    user_msgs.sort(key=lambda x: x[0] if x[0] is not None else float("inf"))
+    words = re.findall(r"\S+", user_msgs[0][1])
+    return " ".join(words[:max_words])
+
+
 def extract_chats_from_json_blob(data: Any) -> List[Chat]:
     out: List[Chat] = []
 
@@ -212,10 +256,12 @@ def extract_chats_from_json_blob(data: Any) -> List[Chat]:
         ct = to_epoch(o.get("create_time") or o.get("created_at") or o.get("conversation", {}).get("create_time"))
         ut = to_epoch(o.get("update_time") or o.get("updated_at") or o.get("conversation", {}).get("update_time"))
         projectish = _detect_projectish(o)
+        prompt_excerpt = _first_user_prompt(o)
         out.append(
             Chat(
                 id=str(cid),
                 title=str(title),
+                prompt_excerpt=prompt_excerpt,
                 create_time=ct,
                 update_time=ut,
                 project_id=projectish,
@@ -320,12 +366,12 @@ def embed_titles_with_retry(embed_client: OpenAI, titles: List[str], batch_size:
                 logger.error(f"Batch {i//batch_size + 1}, attempt {attempt + 1} failed: {type(e).__name__}: {e}")
 
                 # Safely log HTTP details if available
-                response = getattr(e, 'response', None)
+                response = getattr(e, "response", None)
                 if response is not None:
                     logger.error(f"HTTP Response Status: {getattr(response, 'status_code', 'unknown')}")
                     logger.error(f"HTTP Response Headers: {getattr(response, 'headers', {})}")
 
-                request = getattr(e, 'request', None)
+                request = getattr(e, "request", None)
                 if request is not None:
                     logger.error(f"HTTP Request URL: {getattr(request, 'url', 'unknown')}")
                     logger.error(f"HTTP Request Method: {getattr(request, 'method', 'unknown')}")
@@ -335,7 +381,7 @@ def embed_titles_with_retry(embed_client: OpenAI, titles: List[str], batch_size:
                     print(f"\nFailed to embed batch {i//batch_size + 1} after {MAX_RETRIES} attempts: {e}")
                     raise
                 else:
-                    wait_time = RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                    wait_time = RETRY_DELAY * (2**attempt)  # Exponential backoff
                     logger.warning(f"Retrying batch {i//batch_size + 1} in {wait_time}s")
                     print(f"\nEmbedding attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
@@ -360,11 +406,7 @@ def embed_titles(embed_client: OpenAI, titles: List[str], batch_size: int = 96) 
 
 def get_qdrant_client_with_timeout() -> QdrantClient:
     """Create Qdrant client with proper timeout configuration."""
-    return QdrantClient(
-        url=QDRANT_URL,
-        api_key=QDRANT_API_KEY,
-        timeout=int(QDRANT_TIMEOUT)
-    )
+    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=int(QDRANT_TIMEOUT))
 
 
 def ensure_qdrant_collection(client: QdrantClient, name: str, vector_size: int) -> None:
@@ -388,7 +430,7 @@ def ensure_qdrant_collection(client: QdrantClient, name: str, vector_size: int) 
                         print(f"Failed to create Qdrant collection after {MAX_RETRIES} attempts: {create_e}")
                         raise
                     else:
-                        wait_time = RETRY_DELAY * (2 ** attempt)
+                        wait_time = RETRY_DELAY * (2**attempt)
                         print(f"Collection creation attempt {attempt + 1} failed, retrying in {wait_time}s: {create_e}")
                         time.sleep(wait_time)
             else:
@@ -397,7 +439,7 @@ def ensure_qdrant_collection(client: QdrantClient, name: str, vector_size: int) 
                     print(f"Failed to check Qdrant collection after {MAX_RETRIES} attempts: {e}")
                     raise
                 else:
-                    wait_time = RETRY_DELAY * (2 ** attempt)
+                    wait_time = RETRY_DELAY * (2**attempt)
                     print(f"Collection check attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
 
@@ -423,6 +465,7 @@ def upsert_to_qdrant_batched(client: QdrantClient, name: str, chats: List[Chat],
             payload = {
                 "chat_id": c.id,
                 "title": c.title,
+                "prompt_excerpt": c.prompt_excerpt,
                 "create_time": c.create_time,
                 "update_time": c.update_time,
             }
@@ -435,12 +478,12 @@ def upsert_to_qdrant_batched(client: QdrantClient, name: str, chats: List[Chat],
                 break  # Success, exit retry loop
             except Exception as e:
                 if attempt == MAX_RETRIES - 1:  # Last attempt
-                    batch_num = start_idx//QDRANT_BATCH_SIZE + 1
+                    batch_num = start_idx // QDRANT_BATCH_SIZE + 1
                     print(f"\nFailed to upsert batch {batch_num} after {MAX_RETRIES} attempts: {e}")
                     raise
                 else:
-                    wait_time = RETRY_DELAY * (2 ** attempt)
-                    batch_num = start_idx//QDRANT_BATCH_SIZE + 1
+                    wait_time = RETRY_DELAY * (2**attempt)
+                    batch_num = start_idx // QDRANT_BATCH_SIZE + 1
                     print(f"\nUpsert batch {batch_num} attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
 
@@ -574,13 +617,13 @@ def label_clusters_with_llm(infer_client: OpenAI, clusters: Dict[int, List[Chat]
             logger.error(f"LLM inference attempt {attempt + 1} failed: {type(e).__name__}: {e}")
 
             # Detailed HTTP debugging
-            response = getattr(e, 'response', None)
+            response = getattr(e, "response", None)
             if response is not None:
                 logger.error(f"HTTP Response Status: {getattr(response, 'status_code', 'unknown')}")
                 logger.error(f"HTTP Response Headers: {getattr(response, 'headers', {})}")
                 logger.error(f"HTTP Response Text: {getattr(response, 'text', 'unavailable')}")
 
-            request = getattr(e, 'request', None)
+            request = getattr(e, "request", None)
             if request is not None:
                 logger.error(f"HTTP Request URL: {getattr(request, 'url', 'unknown')}")
                 logger.error(f"HTTP Request Method: {getattr(request, 'method', 'unknown')}")
@@ -614,7 +657,7 @@ def label_clusters_with_llm(infer_client: OpenAI, clusters: Dict[int, List[Chat]
                     print(f"Fallback also failed: {fallback_e}")
                     raise e  # Raise original exception
             else:
-                wait_time = RETRY_DELAY * (2 ** attempt)
+                wait_time = RETRY_DELAY * (2**attempt)
                 logger.warning(f"Retrying LLM inference in {wait_time}s")
                 print(f"\nLLM inference attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                 time.sleep(wait_time)
@@ -743,8 +786,8 @@ def categorize_chats(
     embed_client = get_embedding_client()
 
     # 4) Embeddings
-    titles = [c.title for c in chats]
-    vectors = embed_titles(embed_client, titles)
+    texts = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats]
+    vectors = embed_titles(embed_client, texts)
 
     # 5) Optional: persist to Qdrant
     if not no_qdrant:
