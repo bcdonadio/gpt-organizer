@@ -71,7 +71,7 @@ format:
 # Run tests (if any are added later)
 .PHONY: test
 test:
-        $(PYTHON) -m pytest -n auto --cov=GptCategorize --cov=main --cov-report=term-missing -v
+		$(PYTHON) -m pytest -v
 
 # Check if virtual environment exists
 .PHONY: check-venv

@@ -82,3 +82,7 @@ show_error_codes = true
 max-line-length = 120
 ignore = ["E203", "W503", "E226"]
 exclude = [".git", "__pycache__", ".eggs", "*.egg-info", ".mypy_cache", "build", "dist", ".venv"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=GptCategorize --cov=main --cov-report=term-missing -n auto"
+testpaths = ["tests"]
