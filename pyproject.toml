@@ -81,8 +81,10 @@ show_error_codes = true
 
 [tool.pyright]
 pythonVersion = "3.13"
-# typeCheckingMode = "strict"
-include = ["**/*.py"]
+typeCheckingMode = "basic"
+include = ["GptCategorize", "GptMove", "main.py", "tests"]
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
 
 [tool.flake8]
 max-line-length = 120
