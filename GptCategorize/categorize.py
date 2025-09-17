@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from tqdm import tqdm
 
+# Treat this module as package-like so repeated execution via ``runpy``
+# (after it has already been imported) does not trigger RuntimeWarning.
+__path__: List[str] = []
+
 # scikit-learn
 from sklearn.cluster import DBSCAN, KMeans  # type: ignore[import-untyped]
 from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
@@ -138,7 +142,7 @@ class Chat:
 
 
 def now_iso() -> str:
-    return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def to_epoch(ts: Any) -> Optional[float]:
