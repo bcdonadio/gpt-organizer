@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -188,14 +189,14 @@ def test_extract_chats_from_json_blob_handles_dict_container() -> None:
     assert ids == {"direct", "wrapped", "top"}
 
 
-def test_extract_chats_skips_non_dict(monkeypatch) -> None:
+def test_extract_chats_skips_non_dict(monkeypatch: pytest.MonkeyPatch) -> None:
     """``convert_one`` should immediately return for non-dict values."""
 
     monkeypatch.setattr(categorize, "_looks_like_conversation", lambda obj: True)
     assert extract_chats_from_json_blob(["ignore-me"]) == []
 
 
-def test_extract_chats_ignores_empty_ids(monkeypatch) -> None:
+def test_extract_chats_ignores_empty_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     """Conversations with blank identifiers are ignored."""
 
     def forgiving(obj: object) -> bool:
@@ -213,7 +214,7 @@ def test_extract_chats_ignores_empty_ids(monkeypatch) -> None:
     assert extract_chats_from_json_blob(data) == []
 
 
-def test_load_chats_from_conversations_json_deduplicates_latest(tmp_path) -> None:
+def test_load_chats_from_conversations_json_deduplicates_latest(tmp_path: Path) -> None:
     """NDJSON inputs should be parsed and deduplicated by ``id``."""
 
     first = {

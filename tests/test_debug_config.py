@@ -4,17 +4,35 @@ from __future__ import annotations
 
 import runpy
 import sys
-from types import ModuleType, SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace, TracebackType
+from typing import Any
 
 import pytest
 
 if "debugpy" not in sys.modules:
     stub = ModuleType("debugpy")
-    stub.configure = lambda **kwargs: None
-    stub.listen = lambda *args, **kwargs: None
-    stub.wait_for_client = lambda: None
-    stub.breakpoint = lambda: None
-    stub.is_client_connected = lambda: False
+
+    def _noop_configure(**kwargs: Any) -> None:
+        return None
+
+    def _noop_listen(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    def _noop_wait() -> None:
+        return None
+
+    def _noop_breakpoint() -> None:
+        return None
+
+    def _noop_is_client_connected() -> bool:
+        return False
+
+    setattr(stub, "configure", _noop_configure)
+    setattr(stub, "listen", _noop_listen)
+    setattr(stub, "wait_for_client", _noop_wait)
+    setattr(stub, "breakpoint", _noop_breakpoint)
+    setattr(stub, "is_client_connected", _noop_is_client_connected)
     sys.modules["debugpy"] = stub
 
 import debug_config
@@ -23,37 +41,40 @@ import debug_config
 class DebugpyStub:
     def __init__(self) -> None:
         self.actions: list[tuple[str, object]] = []
-        self.connected = False
+        self.connected: bool | Exception = False
+        self.listen_side_effect: Exception | None = None
 
-    def configure(self, **kwargs):
-        self.actions.append(("configure", kwargs))
+    def configure(self, **kwargs: object) -> None:
+        self.actions.append(("configure", dict(kwargs)))
 
-    def listen(self, addr):
+    def listen(self, addr: object) -> None:
+        if self.listen_side_effect is not None:
+            raise self.listen_side_effect
         if isinstance(addr, Exception):
             raise addr
         self.actions.append(("listen", addr))
 
-    def wait_for_client(self):
+    def wait_for_client(self) -> None:
         self.actions.append(("wait", None))
 
-    def breakpoint(self):  # pragma: no cover - defensive
+    def breakpoint(self) -> None:  # pragma: no cover - defensive
         self.actions.append(("breakpoint", None))
 
-    def is_client_connected(self):
+    def is_client_connected(self) -> bool:
         self.actions.append(("is_client_connected", None))
         if isinstance(self.connected, Exception):
             raise self.connected
-        return self.connected
+        return bool(self.connected)
 
 
 @pytest.fixture
-def debugpy_stub(monkeypatch) -> DebugpyStub:
+def debugpy_stub(monkeypatch: pytest.MonkeyPatch) -> DebugpyStub:
     stub = DebugpyStub()
     monkeypatch.setattr(debug_config, "debugpy", stub)
     return stub
 
 
-def test_start_debug_server_waits_for_client(debugpy_stub, capsys):
+def test_start_debug_server_waits_for_client(debugpy_stub: DebugpyStub, capsys: pytest.CaptureFixture[str]) -> None:
     """The server should configure, listen, and optionally wait."""
 
     debug_config.start_debug_server(wait_for_client=True, log_to_stderr=True)
@@ -63,11 +84,13 @@ def test_start_debug_server_waits_for_client(debugpy_stub, capsys):
     assert any(action[0] == "wait" for action in debugpy_stub.actions)
 
 
-def test_start_debug_server_handles_exceptions(monkeypatch, capsys):
+def test_start_debug_server_handles_exceptions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Failures during setup should be reported without raising."""
 
     stub = DebugpyStub()
-    stub.listen = lambda addr: (_ for _ in ()).throw(RuntimeError("boom"))
+    stub.listen_side_effect = RuntimeError("boom")
     monkeypatch.setattr(debug_config, "debugpy", stub)
 
     debug_config.start_debug_server()
@@ -75,19 +98,19 @@ def test_start_debug_server_handles_exceptions(monkeypatch, capsys):
     assert "Failed to start debug server" in out
 
 
-def test_enable_debugging_on_exception_invokes_start(monkeypatch):
+def test_enable_debugging_on_exception_invokes_start(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unhandled exceptions should trigger the debug server."""
 
-    called: list[tuple] = []
+    called: list[tuple[tuple[str, object], ...]] = []
 
-    def fake_start(**kwargs):
+    def fake_start(**kwargs: object) -> None:
         called.append(tuple(kwargs.items()))
 
     monkeypatch.setattr(debug_config, "start_debug_server", fake_start)
 
-    recorded: dict[str, object] = {}
+    recorded: dict[str, tuple[type[BaseException], BaseException, TracebackType | None]] = {}
 
-    def fake_excepthook(exc_type, exc_value, exc_tb):
+    def fake_excepthook(exc_type: type[BaseException], exc_value: BaseException, exc_tb: TracebackType | None) -> None:
         recorded["exc"] = (exc_type, exc_value, exc_tb)
 
     monkeypatch.setattr(sys, "__excepthook__", fake_excepthook)
@@ -96,18 +119,22 @@ def test_enable_debugging_on_exception_invokes_start(monkeypatch):
     sys.excepthook(RuntimeError, RuntimeError("fail"), None)
 
     assert called and called[0][0][0] == "wait_for_client"
-    assert recorded["exc"][0] is RuntimeError
+    recorded_exc = recorded["exc"]
+    assert recorded_exc[0] is RuntimeError
 
 
-def test_enable_debugging_on_exception_skips_keyboard_interrupt(monkeypatch):
+def test_enable_debugging_on_exception_skips_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
     """KeyboardInterrupt should not start debugging."""
 
-    monkeypatch.setattr(debug_config, "start_debug_server", lambda **kwargs: (_ for _ in ()).throw(AssertionError()))
+    def fail_start(**kwargs: object) -> None:
+        raise AssertionError()
+
+    monkeypatch.setattr(debug_config, "start_debug_server", fail_start)
     debug_config.enable_debugging_on_exception()
     sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
 
 
-def test_debug_here_starts_and_breaks(debugpy_stub, capsys):
+def test_debug_here_starts_and_breaks(debugpy_stub: DebugpyStub, capsys: pytest.CaptureFixture[str]) -> None:
     """``debug_here`` should block until a client connects and trigger a breakpoint."""
 
     debug_config.debug_here()
@@ -117,7 +144,7 @@ def test_debug_here_starts_and_breaks(debugpy_stub, capsys):
     assert ("breakpoint", None) in debugpy_stub.actions
 
 
-def test_is_debugger_attached_reports_state(debugpy_stub):
+def test_is_debugger_attached_reports_state(debugpy_stub: DebugpyStub) -> None:
     """``is_debugger_attached`` should proxy to debugpy."""
 
     debugpy_stub.connected = True
@@ -126,7 +153,7 @@ def test_is_debugger_attached_reports_state(debugpy_stub):
     assert debug_config.is_debugger_attached() is False
 
 
-def test_auto_start_if_enabled(monkeypatch):
+def test_auto_start_if_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """Environment flags should trigger auto start with configured values."""
 
     captured: dict[str, object] = {}
@@ -144,26 +171,35 @@ def test_auto_start_if_enabled(monkeypatch):
     assert captured == {"host": "0.0.0.0", "port": 9999, "wait": True}
 
 
-def test_auto_start_if_disabled(monkeypatch):
+def test_auto_start_if_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """When the environment flag is not set nothing happens."""
 
     monkeypatch.delenv("DEBUGPY_ENABLE", raising=False)
-    monkeypatch.setattr(debug_config, "start_debug_server", lambda **kwargs: (_ for _ in ()).throw(AssertionError()))
+
+    def fail_start(**kwargs: object) -> None:
+        raise AssertionError()
+
+    monkeypatch.setattr(debug_config, "start_debug_server", fail_start)
     debug_config.auto_start_if_enabled()
 
 
-def test_debug_config_main_block(monkeypatch, tmp_path, capsys):
+def test_debug_config_main_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Running the module as a script should honor CLI arguments."""
 
     stub = DebugpyStub()
     monkeypatch.setitem(sys.modules, "debugpy", stub)
     monkeypatch.setenv("DEBUGPY_ENABLE", "0")
 
-    argv = ["debug_config", "--host", "127.0.0.1", "--port", "5679", "--wait", "--log"]
+    argv: list[str] = ["debug_config", "--host", "127.0.0.1", "--port", "5679", "--wait", "--log"]
     monkeypatch.setattr(sys, "argv", argv)
 
     # Ensure the sleep loop exits immediately via a KeyboardInterrupt
-    fake_time = SimpleNamespace(sleep=lambda _: (_ for _ in ()).throw(KeyboardInterrupt()))
+    def raise_keyboard_interrupt(_: float) -> None:
+        raise KeyboardInterrupt()
+
+    fake_time = SimpleNamespace(sleep=raise_keyboard_interrupt)
     monkeypatch.setitem(sys.modules, "time", fake_time)
 
     runpy.run_module("debug_config", run_name="__main__")

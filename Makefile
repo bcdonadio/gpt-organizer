@@ -31,12 +31,17 @@ install-dev:
 .PHONY: check
 check:
 	@echo "Running code quality checks..."
-	TESTS=pass
-	$(PYTHON) -m black --check --diff . || TESTS=fail
-	$(PYTHON) -m flake8 . || TESTS=fail
-	$(PYTHON) -m mypy . --strict --show-error-codes --warn-unused-ignores || TESTS=fail
-	$(PYTHON) -m pyright || TESTS=fail
-	[[ "$(TESTS)" == "pass" ]] && echo 'All checks passed!' || echo 'Some checks failed.'; exit 1
+	@TESTS=pass; \
+	$(PYTHON) -m black --check --diff . || TESTS=fail; \
+	$(PYTHON) -m flake8 . || TESTS=fail; \
+	$(PYTHON) -m mypy . --strict --show-error-codes --warn-unused-ignores || TESTS=fail; \
+	$(PYTHON) -m pyright || TESTS=fail; \
+	if [ "$$TESTS" = "pass" ]; then \
+		echo 'All checks passed!'; \
+	else \
+		echo 'Some checks failed.'; \
+		exit 1; \
+	fi
 	@echo "All checks completed!"
 
 # Update dependencies to latest versions

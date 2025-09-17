@@ -852,9 +852,10 @@ def categorize_chats(
     if chats_to_embed:
         embed_client = get_embedding_client()
         texts_to_embed = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed]
-        new_vectors = embed_chats_with_retry(embed_client, texts_to_embed)
+        embeddings = embed_chats_with_retry(embed_client, texts_to_embed)
+        new_vectors = embeddings
         for idx, chat in enumerate(chats_to_embed):
-            cached_vectors[chat.id] = new_vectors[idx]
+            cached_vectors[chat.id] = embeddings[idx]
 
     missing_after = [c.id for c in chats if c.id not in cached_vectors]
     if missing_after:
