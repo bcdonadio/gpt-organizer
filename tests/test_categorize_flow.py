@@ -395,50 +395,6 @@ def test_categorize_prints_summary_for_many_moves(tmp_path, monkeypatch, capsys)
     assert len(plan["proposed_moves"]) == 51
 
 
-def test_categorize_main_cli(monkeypatch, tmp_path):
-    """The module CLI forwards arguments to ``categorize_chats``."""
-
-    path = tmp_path / "source.json"
-    path.write_text("[]")
-    out_path = tmp_path / "result.json"
-
-    called: dict[str, object] = {}
-
-    def fake_categorize(**kwargs):
-        called.update(kwargs)
-        return 5
-
-    monkeypatch.setattr(categorize, "categorize_chats", lambda **kwargs: fake_categorize(**kwargs))
-
-    exit_code = categorize.main([
-        "--conversations-json",
-        str(path),
-        "--out",
-        str(out_path),
-        "--collection",
-        "col",
-        "--no-qdrant",
-        "--eps-cosine",
-        "0.5",
-        "--min-samples",
-        "3",
-        "--confidence-threshold",
-        "0.4",
-        "--time-weight",
-        "0.7",
-        "--limit",
-        "10",
-    ])
-
-    assert exit_code == 5
-    assert called["no_qdrant"] is True
-    assert called["eps_cosine"] == 0.5
-    assert called["min_samples"] == 3
-    assert called["confidence_threshold"] == 0.4
-    assert called["time_weight"] == 0.7
-    assert called["limit"] == 10
-
-
 def test_entry_main_cli(monkeypatch, tmp_path):
     """Top-level ``main.py`` delegates to the categorization function."""
 
@@ -483,20 +439,6 @@ def test_entry_main_cli(monkeypatch, tmp_path):
     assert called["collection"] == "col"
 
 
-def test_categorize_module_main_block(tmp_path, monkeypatch):
-    """Executing the module as ``__main__`` should exit with the wrapped status code."""
-
-    path = tmp_path / "input.json"
-    path.write_text(json.dumps([_conversation("skip", id="chat-z", metadata={"project_id": "x"})]))
-
-    argv = ["categorize", "--conversations-json", str(path), "--out", str(tmp_path / "plan.json"), "--no-qdrant"]
-    monkeypatch.setattr(sys, "argv", argv)
-
-    with pytest.raises(SystemExit) as exc:
-        runpy.run_module("GptCategorize.categorize", run_name="__main__")
-
-    assert exc.value.code == 0
-
 
 def test_entry_main_module_block(tmp_path, monkeypatch):
     """Running ``python -m main`` exits with the CLI return code."""
@@ -512,22 +454,6 @@ def test_entry_main_module_block(tmp_path, monkeypatch):
 
     assert exc.value.code == 0
 
-
-def test_categorize_module_keyboard_interrupt(tmp_path, monkeypatch, capsys):
-    """Keyboard interrupts should surface after printing a message."""
-
-    path = tmp_path / "input.json"
-    path.write_text("[]")
-
-    argv = ["categorize", "--conversations-json", str(path), "--out", str(tmp_path / "plan.json"), "--no-qdrant"]
-    monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr("builtins.open", lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
-
-    with pytest.raises(KeyboardInterrupt):
-        runpy.run_module("GptCategorize.categorize", run_name="__main__")
-
-    out = capsys.readouterr().out
-    assert "Interrupted." in out
 
 
 def test_entry_main_keyboard_interrupt(monkeypatch, tmp_path, capsys):

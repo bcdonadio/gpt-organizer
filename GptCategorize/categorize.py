@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse
 import datetime as dt
 import json
 import logging
@@ -1019,84 +1018,3 @@ def categorize_chats(
         print(f"  ... and {len(proposed_moves)-50} more")
 
     return 0
-
-
-# =====================
-# Main routine
-# =====================
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="Categorize ChatGPT chats by title and emit a provisional move plan.")
-    p.add_argument(
-        "--conversations-json",
-        required=True,
-        help="Path to the ChatGPT conversations JSON file.",
-    )
-    p.add_argument(
-        "--out",
-        default="provisional_move_plan.json",
-        help="Path to write the provisional plan JSON.",
-    )
-    p.add_argument(
-        "--collection",
-        default=QDRANT_COLLECTION,
-        help="Qdrant collection name for embeddings.",
-    )
-    p.add_argument(
-        "--no-qdrant",
-        action="store_true",
-        help="Disable Qdrant persistence (embeddings kept only in-memory).",
-    )
-    p.add_argument(
-        "--eps-cosine",
-        type=float,
-        default=0.25,
-        help="DBSCAN epsilon in cosine distance space (0..2). Lower = tighter clusters.",
-    )
-    p.add_argument(
-        "--min-samples",
-        type=int,
-        default=2,
-        help="DBSCAN min_samples (>=2 is sensible).",
-    )
-    p.add_argument(
-        "--confidence-threshold",
-        type=float,
-        default=0.60,
-        help="Minimum combined confidence to propose moves.",
-    )
-    p.add_argument(
-        "--time-weight",
-        type=float,
-        default=0.25,
-        help="Weight (0..1) given to temporal cohesion when computing cluster cohesion.",
-    )
-    p.add_argument(
-        "--limit",
-        type=int,
-        default=0,
-        help="Optional: limit number of chats processed (debug).",
-    )
-
-    args = p.parse_args(argv)
-
-    return categorize_chats(
-        conversations_json=args.conversations_json,
-        out=args.out,
-        collection=args.collection,
-        no_qdrant=args.no_qdrant,
-        eps_cosine=args.eps_cosine,
-        min_samples=args.min_samples,
-        confidence_threshold=args.confidence_threshold,
-        time_weight=args.time_weight,
-        limit=args.limit,
-    )
-
-
-if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except KeyboardInterrupt:
-        print("\nInterrupted.")
-        raise

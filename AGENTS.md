@@ -42,13 +42,6 @@ uv run python ./main.py \
   --out ./provisional_move_plan.json
 ```
 
-Module entry (equivalent)
-
-```bash
-uv run python -m GptCategorize.categorize \
-  --conversations-json ./conversations.json
-```
-
 Entrypoints in packaging: see [`pyproject.toml`](pyproject.toml:49)
 
 ## Inputs
@@ -74,7 +67,7 @@ Key confidence formulas come from:
 
 ## Tunable CLI Flags
 
-Supported in both [`main.main()`](main.py:119) and [`GptCategorize.main()`](GptCategorize/categorize.py:940):
+Handled by [`main.main()`](main.py:119):
 
 - `--conversations-json PATH` (required)
 - `--out PATH` (default: `provisional_move_plan.json`)
@@ -222,7 +215,7 @@ uv run python ./main.py \
 
 - Packaging CLI:
   - Installable scripts configured in [`pyproject.toml`](pyproject.toml:49):
-    - `categorize` → [`GptCategorize.main()`](GptCategorize/categorize.py:940)
+    - `categorize` → [`main.main()`](main.py:119)
     - `move` → `GptMove:main` (to be implemented)
 
 ## Make Targets for Agents

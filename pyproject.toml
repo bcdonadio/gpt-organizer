@@ -47,7 +47,7 @@ Issues = "https://github.com/bcdonadio/chatgpt-organizer/issues"
 Changelog = "https://github.com/bcdonadio/chatgpt-organizer/blob/main/CHANGELOG.md"
 
 [project.scripts]
-categorize = "GptCategorize:main"
+categorize = "main:main"
 move = "GptMove:main"
 
 [dependency-groups]

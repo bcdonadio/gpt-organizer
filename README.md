@@ -101,12 +101,9 @@ uv run python ./main.py \
 
 ## CLI usage
 
-There are two equivalent CLIs:
+Use the main script [main.main()](main.py:119) via `uv run python ./main.py` or the installed console script `categorize`.
 
-- Main script: [main.main()](main.py:119)
-- Module entry: [GptCategorize.main()](GptCategorize/categorize.py:940) (e.g., `python -m GptCategorize.categorize`)
-
-Options (both CLIs accept the same flags):
+Options:
 
 - --conversations-json PATH (required) — input file path
 - --out PATH (default: `provisional_move_plan.json`) — output plan file

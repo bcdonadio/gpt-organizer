@@ -128,7 +128,7 @@ def main() -> int:
     p.add_argument(
         "--out",
         "-o",
-        default="move_plan.json",
+        default="provisional_move_plan.json",
         help="Path to write the move plan JSON.",
     )
     p.add_argument(
