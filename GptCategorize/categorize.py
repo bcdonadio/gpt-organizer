@@ -560,7 +560,8 @@ def cluster_embeddings(vectors: np.ndarray, eps_cosine: float, min_samples: int)
         # Fallback: naive KMeans with k from sqrt(N)
         n = len(v)
         k = max(2, int(math.sqrt(max(n, 1))))
-        km = KMeans(n_clusters=k, n_init=10, random_state=42)
+        # Use sklearn's automatic heuristic to avoid incompatibilities across versions
+        km = KMeans(n_clusters=k, n_init="auto", random_state=42)
         labels = km.fit_predict(v)
     return np.array(labels, dtype=int)
 
@@ -570,7 +571,7 @@ def cluster_text_cohesion(vectors: np.ndarray, labels_mapped: np.ndarray, cid: i
     idx = np.where(labels_mapped == cid)[0]
     if len(idx) < 2:
         return 0.0
-    sub = normalize(vectors[idx], norm="l2")
+    sub = np.asarray(normalize(vectors[idx], norm="l2"))
     sims = sub @ sub.T  # cosine sim for normalized vectors
     m = sims.shape[0]
     tri = sims[np.triu_indices(m, k=1)]

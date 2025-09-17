@@ -56,6 +56,73 @@ def test_categorize_chats_handles_no_available_items(tmp_path: Path) -> None:
     assert sorted(plan["skipped"]["already_in_project"]) == ["chat-1", "chat-2"]
 
 
+def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The limit flag should cap how many chats enter the processing pipeline."""
+
+    conversations_path = tmp_path / "limit.json"
+    conversations_path.write_text("[]")
+    out_path = tmp_path / "plan.json"
+
+    chats = [
+        categorize.Chat(id="chat-0", title="Alpha", prompt_excerpt="First"),
+        categorize.Chat(id="chat-1", title="Beta", prompt_excerpt="Second"),
+        categorize.Chat(id="chat-2", title="Gamma", prompt_excerpt="Third"),
+    ]
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+
+    embed_calls: list[list[str]] = []
+
+    def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
+        embed_calls.append(list(texts))
+        if not texts:
+            return np.empty((0, 2), dtype=np.float32)
+        values = np.linspace(1.0, 1.0 + len(texts) - 1, num=len(texts), dtype=float)
+        vectors = np.stack([np.array([val, val + 0.1], dtype=float) for val in values], axis=0)
+        return vectors.astype(np.float32)
+
+    def fake_cluster(vectors: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+        assert vectors.shape[0] == 2  # limit applied before clustering
+        return np.zeros(vectors.shape[0], dtype=int)
+
+    def fake_text(_: np.ndarray, *, labels_mapped: np.ndarray, cid: int) -> float:
+        return 0.9
+
+    def fake_temporal(*, members: Sequence[categorize.Chat], time_decay_days: float) -> float:
+        return 0.85
+
+    recorded_clusters: list[list[str]] = []
+
+    def fake_label(_: Any, clusters: dict[int, list[categorize.Chat]]) -> dict[int, dict[str, object]]:
+        recorded_clusters.append([chat.id for chat in clusters.get(0, [])])
+        return {
+            0: {
+                "label": "Limited Cluster",
+                "project_folder_slug": "limited-cluster",
+                "project_title": "Limited Cluster",
+                "confidence_model": 0.95,
+            }
+        }
+
+    monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
+    monkeypatch.setattr(categorize, "cluster_embeddings", fake_cluster)
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", fake_text)
+    monkeypatch.setattr(categorize, "temporal_cohesion", fake_temporal)
+    monkeypatch.setattr(categorize, "get_inference_client", _simple_client)
+    monkeypatch.setattr(categorize, "label_clusters_with_llm", fake_label)
+
+    code = categorize.categorize_chats(str(conversations_path), out=str(out_path), no_qdrant=True, limit=2)
+    assert code == 0
+
+    plan = json.loads(out_path.read_text())
+    cluster_chat_ids = [chat_info["id"] for chat_info in plan["clusters"][0]["chats"]]
+    assert cluster_chat_ids == ["chat-0", "chat-1"]
+    assert embed_calls and len(embed_calls[0]) == 2
+    assert recorded_clusters == [["chat-0", "chat-1"]]
+    assert "chat-2" not in json.dumps(plan)
+
+
 def _simple_client() -> SimpleNamespace:
     return SimpleNamespace()
 
