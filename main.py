@@ -121,11 +121,13 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Categorize ChatGPT chats by title and emit a provisional move plan.")
     p.add_argument(
         "--conversations-json",
+        "-i",
         required=True,
         help="Path to the ChatGPT conversations JSON file.",
     )
     p.add_argument(
         "--out",
+        "-o",
         default="move_plan.json",
         help="Path to write the move plan JSON.",
     )
@@ -136,35 +138,41 @@ def main() -> int:
     )
     p.add_argument(
         "--no-qdrant",
+        "-q",
         action="store_true",
         help="Disable Qdrant persistence (embeddings kept only in-memory).",
     )
     p.add_argument(
         "--eps-cosine",
+        "-e",
         type=float,
         default=0.25,
         help="DBSCAN epsilon in cosine distance space (0..2). Lower = tighter clusters.",
     )
     p.add_argument(
         "--min-samples",
+        "-m",
         type=int,
         default=2,
         help="DBSCAN min_samples (>=2 is sensible).",
     )
     p.add_argument(
         "--confidence-threshold",
+        "-c",
         type=float,
         default=0.60,
         help="Minimum combined confidence to propose moves.",
     )
     p.add_argument(
         "--time-weight",
+        "-t",
         type=float,
         default=0.25,
         help="Weight (0..1) given to temporal cohesion when computing cluster cohesion.",
     )
     p.add_argument(
         "--limit",
+        "-l",
         type=int,
         default=0,
         help="Optional: limit number of chats processed (debug).",
