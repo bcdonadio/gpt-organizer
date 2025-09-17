@@ -55,6 +55,7 @@ dev = [
     "black>=25.1.0",
     "flake8>=7.3.0",
     "mypy>=1.18.1",
+    "pyright>=1.1.390",
     "pytest>=8.4.2",
     "pytest-cov>=5.0.0",
     "pytest-xdist>=3.6.1",
@@ -77,6 +78,11 @@ python_version = "3.13"
 strict = true
 warn_unused_ignores = true
 show_error_codes = true
+
+[tool.pyright]
+pythonVersion = "3.13"
+# typeCheckingMode = "strict"
+include = ["**/*.py"]
 
 [tool.flake8]
 max-line-length = 120

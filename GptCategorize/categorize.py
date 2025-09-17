@@ -396,6 +396,7 @@ def embed_chats_with_retry(embed_client: OpenAI, chats: List[str], batch_size: i
         raise RuntimeError("Empty embeddings returned.")
     return arr
 
+
 # =====================
 # Qdrant Persistence
 # =====================
@@ -836,9 +837,7 @@ def categorize_chats(
     cached_vectors: Dict[str, np.ndarray] = {}
     if qcli:
         try:
-            cached_vectors = fetch_existing_embeddings_from_qdrant(
-                qcli, collection, [c.id for c in chats]
-            )
+            cached_vectors = fetch_existing_embeddings_from_qdrant(qcli, collection, [c.id for c in chats])
         except Exception as e:
             print(f"\nWarning: Failed to read embeddings from Qdrant: {e}")
             print("Proceeding as if the cache were empty.")
@@ -847,17 +846,12 @@ def categorize_chats(
     cached_initial = len(cached_vectors)
     chats_to_embed: List[Chat] = [c for c in chats if c.id not in cached_vectors]
     if cached_initial or chats_to_embed:
-        print(
-            f"Embeddings cache summary - reused {cached_initial}, "
-            f"to compute {len(chats_to_embed)}"
-        )
+        print(f"Embeddings cache summary - reused {cached_initial}, " f"to compute {len(chats_to_embed)}")
 
     new_vectors: Optional[np.ndarray] = None
     if chats_to_embed:
         embed_client = get_embedding_client()
-        texts_to_embed = [
-            f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed
-        ]
+        texts_to_embed = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed]
         new_vectors = embed_chats_with_retry(embed_client, texts_to_embed)
         for idx, chat in enumerate(chats_to_embed):
             cached_vectors[chat.id] = new_vectors[idx]

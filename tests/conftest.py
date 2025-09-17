@@ -140,4 +140,3 @@ def pytest_configure() -> None:
     _ensure_qdrant_stub()
     _ensure_tqdm_stub()
     _ensure_sklearn_stub()
-

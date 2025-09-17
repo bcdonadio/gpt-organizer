@@ -87,15 +87,17 @@ def _sample_clusters() -> dict[int, list[categorize.Chat]]:
 def test_label_clusters_with_llm_success():
     """Successful responses should be parsed into a mapping."""
 
-    resp = json.dumps([
-        {
-            "cluster_id": 0,
-            "label": "Alpha",
-            "project_folder_slug": "alpha",
-            "project_title": "Alpha",
-            "confidence": 0.9,
-        }
-    ])
+    resp = json.dumps(
+        [
+            {
+                "cluster_id": 0,
+                "label": "Alpha",
+                "project_folder_slug": "alpha",
+                "project_title": "Alpha",
+                "confidence": 0.9,
+            }
+        ]
+    )
     client = DummyLLMClient([resp])
     result = categorize.label_clusters_with_llm(client, {0: _sample_clusters()[0]})
     assert result[0]["label"] == "Alpha"
@@ -173,18 +175,22 @@ def test_label_clusters_with_llm_requires_content():
 def test_label_clusters_with_llm_regex_and_parse_errors(monkeypatch):
     """Responses requiring regex extraction and parse errors are handled."""
 
-    messy = "Noise before " + json.dumps(
-        [
-            {
-                "cluster_id": 0,
-                "label": "Delta",
-                "project_folder_slug": "delta",
-                "project_title": "Delta",
-                "confidence": 0.75,
-            },
-            {"cluster": "invalid"},
-        ]
-    ) + " trailing text"
+    messy = (
+        "Noise before "
+        + json.dumps(
+            [
+                {
+                    "cluster_id": 0,
+                    "label": "Delta",
+                    "project_folder_slug": "delta",
+                    "project_title": "Delta",
+                    "confidence": 0.75,
+                },
+                {"cluster": "invalid"},
+            ]
+        )
+        + " trailing text"
+    )
 
     client = DummyLLMClient([messy])
     monkeypatch.setattr(categorize, "VERBOSE_LOGGING", True, raising=False)

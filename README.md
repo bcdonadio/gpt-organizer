@@ -257,7 +257,7 @@ Common tasks are defined in the [Makefile](Makefile):
 
 - `make install` — create venv and install runtime deps
 - `make install-dev` — install runtime + dev deps
-- `make check` — run format, lint, type-check
+- `make check` — run format, lint, and strict static analysis (Black, Flake8, Mypy, Pyright)
 - `make update` — update locked dependencies
 - `make clean` / `make clean-all` — clean caches and venv
 - `make format` — auto-format code
@@ -267,6 +267,7 @@ Code style/quality settings:
 - Black config: [pyproject.toml](pyproject.toml)
 - Flake8 config: [.flake8](.flake8)
 - Mypy strict mode: [pyproject.toml](pyproject.toml)
+- Pyright strict config: [pyproject.toml](pyproject.toml)
 
 ## License
 

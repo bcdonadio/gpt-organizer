@@ -102,6 +102,7 @@ def test_first_user_prompt_handles_alternate_shapes() -> None:
 
     assert _first_user_prompt(conversation) == "String message"
 
+
 def test_extract_chats_from_json_blob_converts_nested_structures() -> None:
     """Conversations are detected whether direct or wrapped in another object."""
 
@@ -276,4 +277,3 @@ def test_cosine_to_euclid_eps_handles_negative_values() -> None:
 
     assert cosine_to_euclid_eps(-0.5) == 0.0
     assert cosine_to_euclid_eps(0.5) == pytest.approx(math.sqrt(1.0))
-

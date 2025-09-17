@@ -92,7 +92,9 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path, monkeypatch):
     qdrant_calls: list[tuple[str, object]] = []
     monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
     monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda client, name, ids: {})
-    monkeypatch.setattr(categorize, "ensure_qdrant_collection", lambda client, name, size: qdrant_calls.append(("ensure", name, size)))
+    monkeypatch.setattr(
+        categorize, "ensure_qdrant_collection", lambda client, name, size: qdrant_calls.append(("ensure", name, size))
+    )
     monkeypatch.setattr(
         categorize,
         "upsert_to_qdrant",
@@ -125,7 +127,11 @@ def test_categorize_chats_reuses_cached_embeddings(tmp_path, monkeypatch):
     }
 
     monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
-    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda client, name, ids: {cid: cached_vectors[cid] for cid in ids})
+    monkeypatch.setattr(
+        categorize,
+        "fetch_existing_embeddings_from_qdrant",
+        lambda client, name, ids: {cid: cached_vectors[cid] for cid in ids},
+    )
     monkeypatch.setattr(categorize, "get_embedding_client", partial(pytest.fail, "should not request embedding client"))
     monkeypatch.setattr(categorize, "embed_chats_with_retry", partial(pytest.fail, "should not embed"))
     monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array([0, 0]))
@@ -168,16 +174,21 @@ def test_categorize_chats_handles_failures_and_fallback(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
     monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
-    monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda client, texts, batch_size=96: np.ones((2, 2), dtype=float))
+    monkeypatch.setattr(
+        categorize, "embed_chats_with_retry", lambda client, texts, batch_size=96: np.ones((2, 2), dtype=float)
+    )
     monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array([0, 0]))
     monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda vectors, labels_mapped, cid: 0.0)
     monkeypatch.setattr(categorize, "temporal_cohesion", lambda members, time_decay_days: 0.0)
+
     def failing_label(client, clusters):
         clusters[99] = []  # Force an empty cluster to exercise the fallback "else" branch.
         raise RuntimeError("llm")
 
     monkeypatch.setattr(categorize, "label_clusters_with_llm", failing_label)
-    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: (_ for _ in ()).throw(RuntimeError("qdrant")))
+    monkeypatch.setattr(
+        categorize, "get_qdrant_client_with_timeout", lambda: (_ for _ in ()).throw(RuntimeError("qdrant"))
+    )
 
     code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
     assert code == 0
@@ -325,6 +336,8 @@ def test_categorize_chats_handles_upsert_failure(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr().out
     assert "upsert boom" in captured
     assert "Continuing without Qdrant persistence" in captured
+
+
 def test_categorize_respects_limit(tmp_path, monkeypatch):
     """Setting ``limit`` should truncate the processed chats."""
 
@@ -345,7 +358,9 @@ def test_categorize_respects_limit(tmp_path, monkeypatch):
         return np.zeros((len(texts), 2), dtype=float)
 
     monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
-    monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.full(len(vectors), -1))
+    monkeypatch.setattr(
+        categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.full(len(vectors), -1)
+    )
     monkeypatch.setattr(categorize, "label_clusters_with_llm", lambda client, clusters: {})
 
     categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=True, limit=1)
@@ -369,7 +384,9 @@ def test_categorize_prints_summary_for_many_moves(tmp_path, monkeypatch, capsys)
 
     monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
     monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
-    monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda client, texts, batch_size=96: np.array(embeddings, dtype=float))
+    monkeypatch.setattr(
+        categorize, "embed_chats_with_retry", lambda client, texts, batch_size=96: np.array(embeddings, dtype=float)
+    )
     monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array(labels))
     monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda vectors, labels_mapped, cid: 0.9)
     monkeypatch.setattr(categorize, "temporal_cohesion", lambda members, time_decay_days: 0.9)
@@ -439,7 +456,6 @@ def test_entry_main_cli(monkeypatch, tmp_path):
     assert called["collection"] == "col"
 
 
-
 def test_entry_main_module_block(tmp_path, monkeypatch):
     """Running ``python -m main`` exits with the CLI return code."""
 
@@ -453,7 +469,6 @@ def test_entry_main_module_block(tmp_path, monkeypatch):
         runpy.run_module("main", run_name="__main__")
 
     assert exc.value.code == 0
-
 
 
 def test_entry_main_keyboard_interrupt(monkeypatch, tmp_path, capsys):
