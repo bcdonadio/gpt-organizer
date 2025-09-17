@@ -13,7 +13,7 @@ Primary CLI entry: [main.main()](main.py:119). Core logic: [GptCategorize.catego
 
 - Reads ChatGPT conversations from a JSON file you exported (see Export guide below).
 - Skips chats that already belong to a project/workspace/folder (heuristics on common fields).
-- Embeds each chat using `EMBEDDING_MODEL` (default: `text-embedding-3-large`) via a dedicated API base/key.
+- Reuses embeddings cached in Qdrant when available, and only embeds remaining chats using `EMBEDDING_MODEL` (default: `text-embedding-3-large`) via a dedicated API base/key.
 - Clusters chats via DBSCAN in Euclidean space over L2-normalized embeddings (≈ cosine distance), with KMeans fallback.
 - Labels clusters with an inference LLM (default: `gpt-5-latest`) and proposes project folder slugs.
 - Computes cluster cohesion from text similarity and temporal proximity (weighted, tunable).
@@ -21,6 +21,7 @@ Primary CLI entry: [main.main()](main.py:119). Core logic: [GptCategorize.catego
 
 Key components:
 
+- Embedding cache: [GptCategorize.fetch_existing_embeddings_from_qdrant()](GptCategorize/categorize.py:445)
 - Embedding: [GptCategorize.embed_chats_with_retry()](GptCategorize/categorize.py:344)
 - Clustering: [GptCategorize.cluster_embeddings()](GptCategorize/categorize.py:505)
 - Temporal cohesion: [GptCategorize.temporal_cohesion()](GptCategorize/categorize.py:531)
@@ -124,7 +125,7 @@ Return code: 0 on success.
 Set via environment variables before running. Defaults are shown below and live in:
 
 - API clients: [GptCategorize.get_inference_client()](GptCategorize/categorize.py:320), [GptCategorize.get_embedding_client()](GptCategorize/categorize.py:332)
-- Qdrant: creation/upsert helpers at [GptCategorize.ensure_qdrant_collection()](GptCategorize/categorize.py:406), [GptCategorize.upsert_to_qdrant_batched()](GptCategorize/categorize.py:441)
+- Qdrant: creation/upsert helpers at [GptCategorize.ensure_qdrant_collection()](GptCategorize/categorize.py:410), [GptCategorize.upsert_to_qdrant_batched()](GptCategorize/categorize.py:490)
 
 OpenAI (or compatible) endpoints and models:
 

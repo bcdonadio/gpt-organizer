@@ -442,6 +442,51 @@ def ensure_qdrant_collection(client: QdrantClient, name: str, vector_size: int) 
                     time.sleep(wait_time)
 
 
+def fetch_existing_embeddings_from_qdrant(
+    client: QdrantClient, name: str, chat_ids: List[str], batch_size: int = 256
+) -> Dict[str, np.ndarray]:
+    """Retrieve previously stored embeddings from Qdrant.
+
+    Args:
+        client: Qdrant client instance.
+        name: Target collection name.
+        chat_ids: Chat identifiers to look up.
+        batch_size: Number of IDs to request per call.
+
+    Returns:
+        Mapping of chat_id -> embedding vector (np.ndarray, float32).
+    """
+
+    found: Dict[str, np.ndarray] = {}
+    if not chat_ids:
+        return found
+
+    for start_idx in range(0, len(chat_ids), batch_size):
+        batch_ids = chat_ids[start_idx : start_idx + batch_size]
+        try:
+            points = client.retrieve(
+                collection_name=name,
+                ids=batch_ids,
+                with_payload=False,
+                with_vectors=True,
+            )
+        except Exception as exc:
+            logger.debug("Failed to retrieve embeddings batch from Qdrant", exc_info=exc)
+            raise
+
+        for point in points:
+            vector = getattr(point, "vector", None)
+            if vector is None:
+                vector = getattr(point, "vectors", None)
+            if isinstance(vector, dict):
+                vector = next(iter(vector.values()), None)
+            if vector is None:
+                continue
+            found[str(getattr(point, "id", ""))] = np.asarray(vector, dtype=np.float32)
+
+    return found
+
+
 def upsert_to_qdrant_batched(client: QdrantClient, name: str, chats: List[Chat], vectors: np.ndarray) -> None:
     """Upsert vectors to Qdrant in batches with retry logic to prevent timeouts."""
     total_points = len(chats)
@@ -779,23 +824,63 @@ def categorize_chats(
             json.dump(plan, f, ensure_ascii=False, indent=2)
         return 0
 
-    # 3) OpenAI clients
-    infer_client = get_inference_client()
-    embed_client = get_embedding_client()
-
-    # 4) Embeddings
-    texts = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats]
-    vectors = embed_chats_with_retry(embed_client, texts)
-
-    # 5) Optional: persist to Qdrant
+    # 3) Attempt to reuse embeddings stored in Qdrant
+    qcli: Optional[QdrantClient] = None
     if not no_qdrant:
         try:
             qcli = get_qdrant_client_with_timeout()
+        except Exception as e:
+            print(f"\nWarning: Failed to connect to Qdrant: {e}")
+            print("Continuing without Qdrant cache/persistence...")
+            qcli = None
+
+    cached_vectors: Dict[str, np.ndarray] = {}
+    if qcli:
+        try:
+            cached_vectors = fetch_existing_embeddings_from_qdrant(
+                qcli, collection, [c.id for c in chats]
+            )
+        except Exception as e:
+            print(f"\nWarning: Failed to read embeddings from Qdrant: {e}")
+            print("Proceeding as if the cache were empty.")
+            cached_vectors = {}
+
+    cached_initial = len(cached_vectors)
+    chats_to_embed: List[Chat] = [c for c in chats if c.id not in cached_vectors]
+    if cached_initial or chats_to_embed:
+        print(
+            f"Embeddings cache summary - reused {cached_initial}, "
+            f"to compute {len(chats_to_embed)}"
+        )
+
+    new_vectors: Optional[np.ndarray] = None
+    if chats_to_embed:
+        embed_client = get_embedding_client()
+        texts_to_embed = [
+            f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed
+        ]
+        new_vectors = embed_chats_with_retry(embed_client, texts_to_embed)
+        for idx, chat in enumerate(chats_to_embed):
+            cached_vectors[chat.id] = new_vectors[idx]
+
+    missing_after = [c.id for c in chats if c.id not in cached_vectors]
+    if missing_after:
+        raise RuntimeError(f"Missing embeddings for chats: {missing_after}")
+
+    vectors_ordered = [np.asarray(cached_vectors[c.id], dtype=np.float32) for c in chats]
+    vectors = np.stack(vectors_ordered, axis=0).astype(np.float32)
+
+    # 4) Optional: persist new embeddings to Qdrant
+    if qcli and not no_qdrant and chats_to_embed and new_vectors is not None:
+        try:
             ensure_qdrant_collection(qcli, collection, vectors.shape[1])
-            upsert_to_qdrant(qcli, collection, chats, vectors)
+            upsert_to_qdrant(qcli, collection, chats_to_embed, new_vectors)
         except Exception as e:
             print(f"\nWarning: Qdrant operation failed: {e}")
             print("Continuing without Qdrant persistence (embeddings kept in-memory only)...")
+
+    # 5) Inference client (LLM labeling)
+    infer_client = get_inference_client()
 
     # 6) Cluster
     labels = cluster_embeddings(vectors, eps_cosine=eps_cosine, min_samples=min_samples)

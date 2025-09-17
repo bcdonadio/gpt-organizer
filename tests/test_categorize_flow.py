@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import runpy
 import sys
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -90,6 +91,7 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path, monkeypatch):
 
     qdrant_calls: list[tuple[str, object]] = []
     monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda client, name, ids: {})
     monkeypatch.setattr(categorize, "ensure_qdrant_collection", lambda client, name, size: qdrant_calls.append(("ensure", name, size)))
     monkeypatch.setattr(
         categorize,
@@ -104,6 +106,53 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path, monkeypatch):
     assert plan["proposed_moves"] and plan["proposed_moves"][0]["project_folder_slug"] == "alpha-project"
     assert plan["skipped"]["singletons"] == ["chat-2"]
     assert qdrant_calls[0][0] == "ensure" and qdrant_calls[1][0] == "upsert"
+
+
+def test_categorize_chats_reuses_cached_embeddings(tmp_path, monkeypatch):
+    """Existing Qdrant vectors should be reused without requesting new embeddings."""
+
+    path = tmp_path / "cached.json"
+    chats = [
+        _conversation("Topic A", id="chat-0", title="Topic A"),
+        _conversation("Topic B", id="chat-1", title="Topic B"),
+    ]
+    path.write_text(json.dumps(chats))
+    out_path = tmp_path / "plan.json"
+
+    cached_vectors = {
+        "chat-0": np.array([1.0, 0.0], dtype=np.float32),
+        "chat-1": np.array([0.5, 0.5], dtype=np.float32),
+    }
+
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda client, name, ids: {cid: cached_vectors[cid] for cid in ids})
+    monkeypatch.setattr(categorize, "get_embedding_client", partial(pytest.fail, "should not request embedding client"))
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", partial(pytest.fail, "should not embed"))
+    monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array([0, 0]))
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda vectors, labels_mapped, cid: 1.0)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda members, time_decay_days: 1.0)
+    monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "label_clusters_with_llm",
+        lambda client, clusters: {
+            0: {
+                "label": "Cached",
+                "project_folder_slug": "cached",
+                "project_title": "Cached",
+                "confidence_model": 0.8,
+            }
+        },
+    )
+
+    monkeypatch.setattr(categorize, "ensure_qdrant_collection", partial(pytest.fail, "should not ensure"))
+    monkeypatch.setattr(categorize, "upsert_to_qdrant", partial(pytest.fail, "should not upsert"))
+
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    assert code == 0
+
+    plan = json.loads(out_path.read_text())
+    assert plan["clusters"] and plan["clusters"][0]["cohesion_text"] == 1.0
 
 
 def test_categorize_chats_handles_failures_and_fallback(tmp_path, monkeypatch, capsys):
@@ -141,6 +190,141 @@ def test_categorize_chats_handles_failures_and_fallback(tmp_path, monkeypatch, c
     assert "Using fallback cluster labels" in captured
 
 
+def test_categorize_chats_warns_on_qdrant_cache_failure(tmp_path, monkeypatch, capsys):
+    """Failures during cache fetch should fall back to embedding all chats."""
+
+    path = tmp_path / "cache-fail.json"
+    chats = [
+        _conversation("Topic A", id="chat-1", title="Topic A"),
+        _conversation("Topic B", id="chat-2", title="Topic B"),
+    ]
+    path.write_text(json.dumps(chats))
+    out_path = tmp_path / "plan.json"
+
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
+
+    def _raise_fetch(*args, **kwargs):
+        raise RuntimeError("fetch boom")
+
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", _raise_fetch)
+    monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "embed_chats_with_retry",
+        lambda client, texts, batch_size=96: np.array([[1.0, 0.0], [0.0, 1.0]], dtype=float),
+    )
+    monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array([0, 0]))
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda vectors, labels_mapped, cid: 0.5)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda members, time_decay_days: 0.5)
+    monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "label_clusters_with_llm",
+        lambda client, clusters: {
+            0: {
+                "label": "Recovered",
+                "project_folder_slug": "recovered",
+                "project_title": "Recovered",
+                "confidence_model": 0.7,
+            }
+        },
+    )
+
+    qdrant_calls: list[tuple[str, object]] = []
+
+    def _record_ensure(client, name, size):
+        qdrant_calls.append(("ensure", size))
+
+    def _record_upsert(client, name, chats_subset, vectors):
+        qdrant_calls.append(("upsert", len(chats_subset)))
+
+    monkeypatch.setattr(categorize, "ensure_qdrant_collection", _record_ensure)
+    monkeypatch.setattr(categorize, "upsert_to_qdrant", _record_upsert)
+
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "cache were empty" in captured
+    assert qdrant_calls == [("ensure", 2), ("upsert", 2)]
+
+
+def test_categorize_chats_raises_when_embeddings_missing(tmp_path, monkeypatch):
+    """If embeddings remain missing after retries the pipeline aborts."""
+
+    path = tmp_path / "missing.json"
+    chats = [
+        _conversation("Topic A", id="chat-1", title="Topic A"),
+        _conversation("Topic B", id="chat-2", title="Topic B"),
+    ]
+    path.write_text(json.dumps(chats))
+
+    class NonStoringDict(dict):
+        def __setitem__(self, key, value):
+            return None
+
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda *args, **kwargs: NonStoringDict())
+    monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "embed_chats_with_retry",
+        lambda client, texts, batch_size=96: np.ones((2, 2), dtype=float),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        categorize.categorize_chats(str(path), out=str(path.with_suffix(".out")), no_qdrant=False)
+
+    assert "Missing embeddings" in str(excinfo.value)
+
+
+def test_categorize_chats_handles_upsert_failure(tmp_path, monkeypatch, capsys):
+    """Upsert errors should warn but not abort processing."""
+
+    path = tmp_path / "upsert.json"
+    chats = [
+        _conversation("Topic A", id="chat-1", title="Topic A"),
+        _conversation("Topic B", id="chat-2", title="Topic B"),
+    ]
+    path.write_text(json.dumps(chats))
+    out_path = tmp_path / "plan.json"
+
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda *args, **kwargs: {})
+    monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "embed_chats_with_retry",
+        lambda client, texts, batch_size=96: np.ones((2, 2), dtype=float),
+    )
+    monkeypatch.setattr(categorize, "cluster_embeddings", lambda vectors, eps_cosine, min_samples: np.array([0, 0]))
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda vectors, labels_mapped, cid: 0.4)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda members, time_decay_days: 0.4)
+    monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        categorize,
+        "label_clusters_with_llm",
+        lambda client, clusters: {
+            0: {
+                "label": "Upsert",
+                "project_folder_slug": "upsert",
+                "project_title": "Upsert",
+                "confidence_model": 0.7,
+            }
+        },
+    )
+
+    monkeypatch.setattr(categorize, "ensure_qdrant_collection", lambda *args, **kwargs: None)
+
+    def _fail_upsert(*args, **kwargs):
+        raise RuntimeError("upsert boom")
+
+    monkeypatch.setattr(categorize, "upsert_to_qdrant", _fail_upsert)
+
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    assert code == 0
+    captured = capsys.readouterr().out
+    assert "upsert boom" in captured
+    assert "Continuing without Qdrant persistence" in captured
 def test_categorize_respects_limit(tmp_path, monkeypatch):
     """Setting ``limit`` should truncate the processed chats."""
 

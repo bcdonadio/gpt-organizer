@@ -97,6 +97,70 @@ def test_embed_chats_with_retry_detects_empty_embeddings(monkeypatch):
         categorize.embed_chats_with_retry(client, ["anything"], batch_size=16)
 
 
+def test_fetch_existing_embeddings_from_qdrant_returns_vectors():
+    """Cached embeddings should be returned as float32 arrays."""
+
+    calls: list[list[str]] = []
+
+    class Client:
+        def retrieve(self, collection_name, ids, with_payload, with_vectors):
+            calls.append(list(ids))
+            returned = []
+            for cid in ids:
+                if cid.endswith("dict"):
+                    returned.append(SimpleNamespace(id=cid, vectors={"default": [0.5, 0.5]}))
+                else:
+                    returned.append(SimpleNamespace(id=cid, vector=[1.0, 0.0]))
+            return returned
+
+    result = categorize.fetch_existing_embeddings_from_qdrant(
+        Client(),
+        "col",
+        ["a", "b-dict"],
+        batch_size=1,
+    )
+
+    assert calls == [["a"], ["b-dict"]]
+    assert set(result.keys()) == {"a", "b-dict"}
+    assert all(isinstance(vec, np.ndarray) and vec.dtype == np.float32 for vec in result.values())
+
+
+def test_fetch_existing_embeddings_from_qdrant_skips_missing_vectors():
+    """Entries without vectors should be ignored."""
+
+    class Client:
+        def retrieve(self, collection_name, ids, with_payload, with_vectors):
+            return [
+                SimpleNamespace(id="a", vector=None),
+                SimpleNamespace(id="b", vectors={}),
+            ]
+
+    result = categorize.fetch_existing_embeddings_from_qdrant(Client(), "col", ["a", "b"])
+    assert result == {}
+
+
+def test_fetch_existing_embeddings_from_qdrant_propagates_errors():
+    """Retrieval failures should bubble up to the caller."""
+
+    class Client:
+        def retrieve(self, collection_name, ids, with_payload, with_vectors):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        categorize.fetch_existing_embeddings_from_qdrant(Client(), "col", ["only"], batch_size=2)
+
+
+def test_fetch_existing_embeddings_from_qdrant_handles_empty_ids():
+    """No retrieval calls should happen when there are no chat IDs."""
+
+    class Client:
+        def retrieve(self, *args, **kwargs):
+            raise AssertionError("retrieve should not be called")
+
+    result = categorize.fetch_existing_embeddings_from_qdrant(Client(), "col", [])
+    assert result == {}
+
+
 def test_get_qdrant_client_with_timeout(monkeypatch):
     """The Qdrant client factory should forward configuration parameters."""
 

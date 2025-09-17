@@ -127,27 +127,30 @@ Defined near the top of [`categorize.py`](GptCategorize/categorize.py:31):
 2) Filter out chats already in projects
    - project heuristics via [`_detect_projectish()`](GptCategorize/categorize.py:178)
 
-3) Embeddings
+3) Retrieve cached embeddings from Qdrant
+   - [`fetch_existing_embeddings_from_qdrant()`](GptCategorize/categorize.py:445)
+
+4) Embed chats missing vectors
    - Robust retry loop: [`embed_chats_with_retry()`](GptCategorize/categorize.py:344)
 
-4) Optional persistence
+5) Optional persistence (new vectors only)
    - Qdrant collection management and batched upserts:
-     - [`ensure_qdrant_collection()`](GptCategorize/categorize.py:406)
-     - [`upsert_to_qdrant_batched()`](GptCategorize/categorize.py:441)
+     - [`ensure_qdrant_collection()`](GptCategorize/categorize.py:410)
+     - [`upsert_to_qdrant_batched()`](GptCategorize/categorize.py:490)
 
-5) Clustering
+6) Clustering
    - [`cluster_embeddings()`](GptCategorize/categorize.py:505)
    - KMeans fallback with `random_state=42` on degenerate DBSCAN
 
-6) Cohesion metrics
+7) Cohesion metrics
    - [`cluster_text_cohesion()`](GptCategorize/categorize.py:519)
    - [`temporal_cohesion()`](GptCategorize/categorize.py:531)
 
-7) LLM labeling with strict JSON
+8) LLM labeling with strict JSON
    - [`label_clusters_with_llm()`](GptCategorize/categorize.py:567)
    - Fallback heuristic if LLM call fails
 
-8) Plan emission
+9) Plan emission
    - Orchestrated by [`categorize_chats()`](GptCategorize/categorize.py:704)
 
 ## Failure Modes and Behavior
