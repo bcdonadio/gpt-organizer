@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
+import GptCategorize.categorize as categorize
 from GptCategorize.categorize import (
     Chat,
     _detect_projectish,
@@ -36,6 +37,7 @@ def test_to_epoch_parses_various_inputs() -> None:
     assert to_epoch(iso_text) == pytest.approx(expected)
 
     assert to_epoch("not-a-timestamp") is None
+    assert to_epoch({"unexpected": "shape"}) is None
 
 
 def test_detect_projectish_scans_nested_fields() -> None:
@@ -47,6 +49,7 @@ def test_detect_projectish_scans_nested_fields() -> None:
     }
     assert _detect_projectish(obj) == "folder-123"
 
+    assert _detect_projectish({"project_id": "direct"}) == "direct"
     assert _detect_projectish({"conversation": {"project": 7}}) == "7"
     assert _detect_projectish({}) is None
 
@@ -85,6 +88,19 @@ def test_first_user_prompt_prefers_oldest_and_truncates() -> None:
     result = _first_user_prompt(conversation, max_words=5)
     assert result == "Earliest user message with enough"
 
+
+def test_first_user_prompt_handles_alternate_shapes() -> None:
+    """Content stored under ``text`` or as a string should be considered."""
+
+    conversation = {
+        "messages": [
+            {"author": {"role": "user"}, "content": {"text": "Dict text"}, "create_time": 200},
+            {"author": {"role": "user"}, "content": "String message", "create_time": 100},
+            {"author": {"role": "user"}, "content": {"text": ""}, "create_time": 50},
+        ]
+    }
+
+    assert _first_user_prompt(conversation) == "String message"
 
 def test_extract_chats_from_json_blob_converts_nested_structures() -> None:
     """Conversations are detected whether direct or wrapped in another object."""
@@ -137,6 +153,65 @@ def test_extract_chats_from_json_blob_converts_nested_structures() -> None:
     assert nested.create_time == pytest.approx(expected_ct)
 
 
+def test_extract_chats_from_json_blob_handles_dict_container() -> None:
+    """Dictionary containers should also be flattened into chats."""
+
+    data = {
+        "conversations": [
+            {
+                "id": "direct",
+                "title": "Direct",
+                "messages": [{"author": {"role": "user"}, "content": {"parts": ["Hello"]}}],
+            },
+            {
+                "title": "Missing id",
+                "messages": [{"author": {"role": "user"}, "content": {"parts": ["Ignore"]}}],
+            },
+        ],
+        "data": [
+            {
+                "conversation": {
+                    "id": "wrapped",
+                    "title": "Wrapped",
+                    "messages": [{"author": {"role": "user"}, "content": "Hi"}],
+                }
+            }
+        ],
+        "id": "top",
+        "title": "Top-level",
+        "messages": [{"author": {"role": "user"}, "content": {"parts": ["Top"]}}],
+    }
+
+    chats = extract_chats_from_json_blob(data)
+    ids = {chat.id for chat in chats}
+    assert ids == {"direct", "wrapped", "top"}
+
+
+def test_extract_chats_skips_non_dict(monkeypatch) -> None:
+    """``convert_one`` should immediately return for non-dict values."""
+
+    monkeypatch.setattr(categorize, "_looks_like_conversation", lambda obj: True)
+    assert extract_chats_from_json_blob(["ignore-me"]) == []
+
+
+def test_extract_chats_ignores_empty_ids(monkeypatch) -> None:
+    """Conversations with blank identifiers are ignored."""
+
+    def forgiving(obj: object) -> bool:
+        return isinstance(obj, dict) and "title" in obj and "id" in obj
+
+    monkeypatch.setattr(categorize, "_looks_like_conversation", forgiving)
+    data = [
+        {
+            "id": "",
+            "title": "Blank",
+            "messages": [{"author": {"role": "user"}, "content": {"parts": ["Hi"]}}],
+        }
+    ]
+
+    assert extract_chats_from_json_blob(data) == []
+
+
 def test_load_chats_from_conversations_json_deduplicates_latest(tmp_path) -> None:
     """NDJSON inputs should be parsed and deduplicated by ``id``."""
 
@@ -160,6 +235,13 @@ def test_load_chats_from_conversations_json_deduplicates_latest(tmp_path) -> Non
     chat = chats[0]
     assert chat.title == "New Title"
     assert chat.update_time == pytest.approx(1_700_000_500.0)
+
+
+def test_load_chats_from_conversations_json_missing_file() -> None:
+    """A helpful error should be raised when the file does not exist."""
+
+    with pytest.raises(FileNotFoundError):
+        load_chats_from_conversations_json("/nonexistent/conversations.json")
 
 
 def test_cluster_text_cohesion_returns_average_similarity() -> None:
