@@ -14,6 +14,7 @@ Primary CLI entry: [main.main()](main.py:119). Core logic: [GptCategorize.catego
 - Reads ChatGPT conversations from a JSON file you exported (see Export guide below).
 - Skips chats that already belong to a project/workspace/folder (heuristics on common fields).
 - Reuses embeddings cached in Qdrant when available, and only embeds remaining chats using `EMBEDDING_MODEL` (default: `text-embedding-3-large`) via a dedicated API base/key.
+- Streams new embeddings in configurable word-limited batches, optionally running multiple batches in parallel and persisting each group to Qdrant before requesting the next.
 - Clusters chats via HDBSCAN in Euclidean space over L2-normalized embeddings (≈ cosine distance), with KMeans fallback.
 - Labels clusters with an inference LLM (default: `gpt-5-latest`) and proposes project folder slugs.
 - Computes cluster cohesion from text similarity and temporal proximity (weighted, tunable).
@@ -115,6 +116,8 @@ Options:
 - --confidence-threshold FLOAT (default: 0.60) — minimum combined confidence to propose moves
 - --time-weight FLOAT (default: 0.25) — weight (0..1) applied to temporal cohesion
 - --limit INT (default: 0) — process only first N chats (debug)
+- --embedding-batch-words INT (default: 512) — word budget per embedding API request batch
+- --embedding-batch-parallelism INT (default: 1) — maximum batches embedded/upserted concurrently
 
 Return code: 0 on success.
 
@@ -202,7 +205,9 @@ The tool writes a JSON plan (default `./provisional_move_plan.json`) with the sc
     "min_cluster_size": 2,
     "confidence_threshold": 0.6,
     "time_weight": 0.25,
-    "time_decay_days": 30
+    "time_decay_days": 30,
+    "embedding_batch_words": 512,
+    "embedding_batch_parallelism": 1
   },
   "collections": { "qdrant_collection": "chatgpt_chats" },
   "clusters": [

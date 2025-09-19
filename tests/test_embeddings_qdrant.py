@@ -111,6 +111,24 @@ def test_embed_chats_with_retry_detects_empty_embeddings(monkeypatch: pytest.Mon
         categorize.embed_chats_with_retry(cast(Any, client), ["anything"], batch_size=16)
 
 
+def test_estimate_word_count_and_batch_builder() -> None:
+    """Word counting and batch construction respect the configured limits."""
+
+    texts = ["one two three", "four", "   ", "five six seven eight nine", "ten"]
+    batches = categorize.build_embedding_batches(texts, words_per_batch=4)
+
+    assert batches == [[0, 1], [2], [3], [4]]
+    assert categorize.estimate_word_count("just two words") == 3
+    assert categorize.estimate_word_count("   ") == 0
+
+
+def test_build_embedding_batches_rejects_invalid_budget() -> None:
+    """A non-positive word budget is rejected early."""
+
+    with pytest.raises(ValueError):
+        categorize.build_embedding_batches(["text"], words_per_batch=0)
+
+
 def test_fetch_existing_embeddings_from_qdrant_returns_vectors() -> None:
     """Cached embeddings should be returned as float32 arrays."""
 

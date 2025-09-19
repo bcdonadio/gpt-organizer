@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import math
@@ -9,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -398,6 +399,48 @@ def embed_chats_with_retry(embed_client: OpenAI, chats: List[str], batch_size: i
     return arr
 
 
+def estimate_word_count(text: str) -> int:
+    """Return a coarse word count for batching decisions."""
+    stripped = text.strip()
+    if not stripped:
+        return 0
+    # Split on whitespace to approximate token count without heavy parsing.
+    return len(stripped.split())
+
+
+def build_embedding_batches(texts: Sequence[str], words_per_batch: int) -> List[List[int]]:
+    """Group indices of texts into batches capped by a word-count budget."""
+    if words_per_batch <= 0:
+        raise ValueError("words_per_batch must be positive")
+
+    batches: List[List[int]] = []
+    current: List[int] = []
+    current_words = 0
+
+    for idx, text in enumerate(texts):
+        words = estimate_word_count(text)
+        words = max(1, words)  # ensure progress even for empty/whitespace-only prompts
+
+        if current and current_words + words > words_per_batch:
+            batches.append(current)
+            current = []
+            current_words = 0
+
+        current.append(idx)
+        current_words += words
+
+        if words >= words_per_batch:
+            # Large entries get their own batch so they do not monopolize future slots
+            batches.append(current)
+            current = []
+            current_words = 0
+
+    if current:
+        batches.append(current)
+
+    return batches
+
+
 # =====================
 # Qdrant Persistence
 # =====================
@@ -768,6 +811,8 @@ def categorize_chats(
     confidence_threshold: float = 0.60,
     time_weight: float = 0.25,
     limit: int = 0,
+    embedding_batch_words: int = 512,
+    embedding_batch_parallelism: int = 1,
 ) -> int:
     """Core function to categorize ChatGPT chats by title and emit a provisional move plan.
 
@@ -782,6 +827,8 @@ def categorize_chats(
         confidence_threshold: Minimum combined confidence to propose moves
         time_weight: Weight (0..1) given to temporal cohesion when computing cluster cohesion
         limit: Optional: limit number of chats processed (debug)
+        embedding_batch_words: Approximate number of words per embedding request batch
+        embedding_batch_parallelism: Number of batches to embed/upload concurrently
 
     Returns:
         Exit code (0 for success)
@@ -790,6 +837,8 @@ def categorize_chats(
     time_weight = max(0.0, min(1.0, float(time_weight)))
     min_samples = max(1, int(min_samples))
     min_cluster_size = max(2, int(min_cluster_size))
+    embedding_batch_words = max(1, int(embedding_batch_words))
+    embedding_batch_parallelism = max(1, int(embedding_batch_parallelism))
 
     # 1) Load chats from JSON
     chats_all = load_chats_from_conversations_json(conversations_json)
@@ -822,6 +871,8 @@ def categorize_chats(
                 "confidence_threshold": confidence_threshold,
                 "time_weight": time_weight,
                 "time_decay_days": TIME_DECAY_DAYS,
+                "embedding_batch_words": embedding_batch_words,
+                "embedding_batch_parallelism": embedding_batch_parallelism,
             },
             "collections": {"qdrant_collection": collection},
             "clusters": [],
@@ -860,14 +911,68 @@ def categorize_chats(
     if cached_initial or chats_to_embed:
         print(f"Embeddings cache summary - reused {cached_initial}, " f"to compute {len(chats_to_embed)}")
 
-    new_vectors: Optional[np.ndarray] = None
     if chats_to_embed:
-        embed_client = get_embedding_client()
         texts_to_embed = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed]
-        embeddings = embed_chats_with_retry(embed_client, texts_to_embed)
-        new_vectors = embeddings
-        for idx, chat in enumerate(chats_to_embed):
-            cached_vectors[chat.id] = embeddings[idx]
+        batches = build_embedding_batches(texts_to_embed, embedding_batch_words)
+        total_batches = len(batches)
+        print(
+            "Embedding "
+            f"{len(chats_to_embed)} new chats across {total_batches} batches "
+            f"(~{embedding_batch_words} words each, parallelism={embedding_batch_parallelism})"
+        )
+
+        shared_client: Optional[OpenAI] = None
+        if embedding_batch_parallelism == 1:
+            shared_client = get_embedding_client()
+
+        persist_enabled = bool(qcli and not no_qdrant)
+        collection_ready = False
+
+        def embed_batch(indices: Sequence[int], client: Optional[OpenAI] = None) -> np.ndarray:
+            local_client = client if client is not None else get_embedding_client()
+            batch_texts = [texts_to_embed[i] for i in indices]
+            return embed_chats_with_retry(local_client, batch_texts)
+
+        for start_idx in range(0, total_batches, embedding_batch_parallelism):
+            group = batches[start_idx : start_idx + embedding_batch_parallelism]
+            batch_outputs: Dict[Tuple[int, ...], np.ndarray] = {}
+
+            if len(group) == 1 and embedding_batch_parallelism == 1:
+                indices = group[0]
+                key = tuple(indices)
+                batch_outputs[key] = embed_batch(indices, shared_client)
+            else:
+                with ThreadPoolExecutor(max_workers=len(group)) as executor:
+                    future_to_key = {
+                        executor.submit(embed_batch, indices, None): tuple(indices) for indices in group
+                    }
+                    for future, key in future_to_key.items():
+                        batch_outputs[key] = future.result()
+
+            for indices in group:
+                key = tuple(indices)
+                embeddings = batch_outputs[key]
+                if embeddings.ndim != 2 or embeddings.shape[0] != len(indices):
+                    raise RuntimeError("Embedding batch shape mismatch")
+
+                for local_idx, vector in zip(indices, embeddings):
+                    chat = chats_to_embed[local_idx]
+                    cached_vectors[chat.id] = np.asarray(vector, dtype=np.float32)
+
+                if persist_enabled:
+                    try:
+                        if not collection_ready:
+                            assert qcli is not None
+                            ensure_qdrant_collection(qcli, collection, embeddings.shape[1])
+                            collection_ready = True
+
+                        subset_chats = [chats_to_embed[i] for i in indices]
+                        assert qcli is not None
+                        upsert_to_qdrant(qcli, collection, subset_chats, embeddings.astype(np.float32, copy=False))
+                    except Exception as e:
+                        print(f"\nWarning: Qdrant operation failed: {e}")
+                        print("Continuing without Qdrant persistence (embeddings kept in-memory only)...")
+                        persist_enabled = False
 
     missing_after = [c.id for c in chats if c.id not in cached_vectors]
     if missing_after:
@@ -876,19 +981,10 @@ def categorize_chats(
     vectors_ordered = [np.asarray(cached_vectors[c.id], dtype=np.float32) for c in chats]
     vectors = np.stack(vectors_ordered, axis=0).astype(np.float32)
 
-    # 4) Optional: persist new embeddings to Qdrant
-    if qcli and not no_qdrant and chats_to_embed and new_vectors is not None:
-        try:
-            ensure_qdrant_collection(qcli, collection, vectors.shape[1])
-            upsert_to_qdrant(qcli, collection, chats_to_embed, new_vectors)
-        except Exception as e:
-            print(f"\nWarning: Qdrant operation failed: {e}")
-            print("Continuing without Qdrant persistence (embeddings kept in-memory only)...")
-
-    # 5) Inference client (LLM labeling)
+    # 4) Inference client (LLM labeling)
     infer_client = get_inference_client()
 
-    # 6) Cluster
+    # 5) Cluster
     labels = cluster_embeddings(
         vectors,
         eps_cosine=eps_cosine,
@@ -910,7 +1006,7 @@ def categorize_chats(
             continue
         clusters.setdefault(lab, []).append(c)
 
-    # 7) Compute cohesion (text + time) and label with LLM
+    # 6) Compute cohesion (text + time) and label with LLM
     text_cohesions: Dict[int, float] = {
         cid: cluster_text_cohesion(vectors, labels_mapped=labels_mapped, cid=cid) for cid in clusters
     }
@@ -1005,6 +1101,8 @@ def categorize_chats(
             "confidence_threshold": confidence_threshold,
             "time_weight": time_weight,
             "time_decay_days": TIME_DECAY_DAYS,
+            "embedding_batch_words": embedding_batch_words,
+            "embedding_batch_parallelism": embedding_batch_parallelism,
         },
         "collections": {"qdrant_collection": collection},
         "clusters": cluster_descs,  # type: ignore[dict-item]

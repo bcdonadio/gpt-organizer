@@ -184,6 +184,18 @@ def main() -> int:
         default=0,
         help="Optional: limit number of chats processed (debug).",
     )
+    p.add_argument(
+        "--embedding-batch-words",
+        type=int,
+        default=512,
+        help="Approximate number of words grouped into each embedding API batch.",
+    )
+    p.add_argument(
+        "--embedding-batch-parallelism",
+        type=int,
+        default=1,
+        help="How many embedding batches to process and upload concurrently.",
+    )
 
     args = p.parse_args()
 
@@ -199,6 +211,8 @@ def main() -> int:
         confidence_threshold=args.confidence_threshold,
         time_weight=args.time_weight,
         limit=args.limit,
+        embedding_batch_words=args.embedding_batch_words,
+        embedding_batch_parallelism=args.embedding_batch_parallelism,
     )
 
 

@@ -198,6 +198,179 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path: Path, monkeypatch
     assert qdrant_calls[0][0] == "ensure" and qdrant_calls[1][0] == "upsert"
 
 
+def test_embedding_batches_wait_for_qdrant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Next embedding groups are requested only after prior upserts complete."""
+
+    out_path = tmp_path / "plan.json"
+
+    chats = [
+        categorize.Chat(id=f"chat-{idx}", title=f"Title {idx}", prompt_excerpt=f"body {idx}", create_time=idx)
+        for idx in range(4)
+    ]
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+
+    def text_for(chat: categorize.Chat) -> str:
+        return f"{chat.title}\n\n{chat.prompt_excerpt}" if chat.prompt_excerpt else chat.title
+
+    text_to_id = {text_for(chat): chat.id for chat in chats}
+
+    call_log: list[tuple[str, list[str]]] = []
+
+    def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
+        ids = [text_to_id[text] for text in texts]
+        call_log.append(("embed", ids))
+        vectors = np.array([[float(idx + 1), 0.0] for idx, _ in enumerate(ids)], dtype=np.float32)
+        return vectors
+
+    def fake_cluster(
+        vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
+        assert vectors.shape[0] == len(chats)
+        return np.zeros(vectors.shape[0], dtype=int)
+
+    def fake_label(_: Any, clusters: dict[int, list[categorize.Chat]]) -> dict[int, dict[str, object]]:
+        return {
+            0: {
+                "label": "Grouped",
+                "project_folder_slug": "grouped",
+                "project_title": "Grouped",
+                "confidence_model": 0.9,
+            }
+        }
+
+    qdrant_events: list[list[str]] = []
+
+    def fake_upsert(_: Any, __: str, subset: Sequence[categorize.Chat], vectors: np.ndarray) -> None:
+        ids = [chat.id for chat in subset]
+        call_log.append(("upsert", ids))
+        qdrant_events.append(ids)
+        assert vectors.shape[0] == len(subset)
+
+    ensure_calls: list[tuple[str, int]] = []
+
+    def fake_ensure(_: Any, name: str, size: int) -> None:
+        ensure_calls.append((name, size))
+
+    monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
+    monkeypatch.setattr(categorize, "get_inference_client", _simple_client)
+    monkeypatch.setattr(categorize, "cluster_embeddings", fake_cluster)
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda *_args, **_kwargs: 0.8)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda *_args, **_kwargs: 0.7)
+    monkeypatch.setattr(categorize, "label_clusters_with_llm", fake_label)
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", _simple_client)
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(categorize, "ensure_qdrant_collection", fake_ensure)
+    monkeypatch.setattr(categorize, "upsert_to_qdrant", fake_upsert)
+
+    code = categorize.categorize_chats(
+        "ignored.json",
+        out=str(out_path),
+        no_qdrant=False,
+        embedding_batch_words=1,
+        embedding_batch_parallelism=2,
+    )
+    assert code == 0
+
+    plan = json.loads(out_path.read_text())
+    assert plan["parameters"]["embedding_batch_words"] == 1
+    assert plan["parameters"]["embedding_batch_parallelism"] == 2
+    assert ensure_calls and ensure_calls[0][1] == 2
+    assert qdrant_events == [["chat-0"], ["chat-1"], ["chat-2"], ["chat-3"]]
+
+    def locate(kind: str, target: str) -> int:
+        for idx, entry in enumerate(call_log):
+            if entry[0] == kind and entry[1] == [target]:
+                return idx
+        raise AssertionError(f"{kind} call for {target} not found")
+
+    first_upsert_idx = max(locate("upsert", "chat-0"), locate("upsert", "chat-1"))
+    assert locate("embed", "chat-2") > first_upsert_idx
+    assert locate("embed", "chat-3") > first_upsert_idx
+
+
+def test_embedding_batch_failure_disables_qdrant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A failed upsert disables further persistence but keeps embedding batches flowing."""
+
+    out_path = tmp_path / "plan.json"
+    chats = [
+        categorize.Chat(id=f"chat-{idx}", title=f"Title {idx}", prompt_excerpt=f"body {idx}")
+        for idx in range(3)
+    ]
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+
+    def text_for(chat: categorize.Chat) -> str:
+        return f"{chat.title}\n\n{chat.prompt_excerpt}" if chat.prompt_excerpt else chat.title
+
+    text_to_id = {text_for(chat): chat.id for chat in chats}
+
+    embed_tally = 0
+
+    def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
+        nonlocal embed_tally
+        embed_tally += len(texts)
+        _ = [text_to_id[text] for text in texts]
+        return np.ones((len(texts), 2), dtype=np.float32)
+
+    upsert_attempts = 0
+
+    def failing_upsert(_: Any, __: str, subset: Sequence[categorize.Chat], vectors: np.ndarray) -> None:
+        nonlocal upsert_attempts
+        upsert_attempts += 1
+        assert vectors.shape[0] == len(subset)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
+    monkeypatch.setattr(categorize, "get_inference_client", _simple_client)
+    monkeypatch.setattr(categorize, "cluster_embeddings", lambda *_args, **_kwargs: np.zeros(len(chats), dtype=int))
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda *_args, **_kwargs: 0.5)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda *_args, **_kwargs: 0.5)
+    monkeypatch.setattr(categorize, "label_clusters_with_llm", lambda *_args, **_kwargs: {0: {"label": "ok"}})
+    monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", _simple_client)
+    monkeypatch.setattr(categorize, "fetch_existing_embeddings_from_qdrant", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(categorize, "ensure_qdrant_collection", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(categorize, "upsert_to_qdrant", failing_upsert)
+
+    code = categorize.categorize_chats(
+        "ignored.json",
+        out=str(out_path),
+        no_qdrant=False,
+        embedding_batch_words=1,
+        embedding_batch_parallelism=1,
+    )
+    assert code == 0
+
+    captured = capsys.readouterr().out
+    assert "Warning: Qdrant operation failed" in captured
+    assert embed_tally == len(chats)
+    assert upsert_attempts == 1
+
+
+def test_embedding_batch_shape_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An embedding batch returning an unexpected shape is treated as fatal."""
+
+    out_path = tmp_path / "plan.json"
+    chats = [categorize.Chat(id="bad", title="One", prompt_excerpt="body")]
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_args, **_kwargs: np.zeros((0, 2), dtype=np.float32))
+
+    with pytest.raises(RuntimeError, match="Embedding batch shape mismatch"):
+        categorize.categorize_chats(
+            "ignored.json",
+            out=str(out_path),
+            no_qdrant=True,
+            embedding_batch_words=1,
+            embedding_batch_parallelism=1,
+        )
+
+
 def test_categorize_chats_reuses_cached_embeddings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Existing Qdrant vectors should be reused without requesting new embeddings."""
 
