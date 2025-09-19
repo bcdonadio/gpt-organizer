@@ -9,6 +9,24 @@ Operational runbook for coding agents integrating with this repository.
 
 Primary entry: [`main.main()`](main.py:119). Core API: [`GptCategorize.categorize_chats()`](GptCategorize/categorize.py:704).
 
+## Main development workflow
+
+Prepare the environment with:
+
+```sh
+make install-dev
+source .venv/bin/activate
+```
+
+**IMPORTANT:** After performing a set of changes and before claming a task completed, run:
+
+- `make format` to ensure the project is properly formatted according to convention.
+- `make check` to ensure no format, lint or type errors. **Fix and iterate**
+  until no errors nor warnings are present anymore.
+- `make test` to ensure that all unit tests are passing and there's no regressions.
+
+Crucially, aim to **maintain 100% test coverage** across the project.
+
 ## Quickstart
 
 Environment
