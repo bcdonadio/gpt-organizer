@@ -354,8 +354,11 @@ def embed_chats_with_retry(embed_client: OpenAI, chats: List[str], batch_size: i
     """Embed chats with retry logic and timeout handling."""
     logger.info(f"Starting embedding process for {len(chats)} chats in batches of {batch_size}")
     vecs: List[List[float]] = []
+    total_batches = math.ceil(len(chats) / batch_size) if chats else 0
 
-    for i in tqdm(range(0, len(chats), batch_size), desc="Embedding chats"):
+    progress = tqdm(total=total_batches, desc="Embedding chats") if total_batches > 1 else None
+
+    for i in range(0, len(chats), batch_size):
         batch = chats[i : i + batch_size]
         logger.debug(f"Processing batch {i//batch_size + 1}: {len(batch)} chats")
 
@@ -394,6 +397,12 @@ def embed_chats_with_retry(embed_client: OpenAI, chats: List[str], batch_size: i
                     logger.warning(f"Retrying batch {i//batch_size + 1} in {wait_time}s")
                     print(f"\nEmbedding attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
+
+        if progress is not None:
+            progress.update(1)
+
+    if progress is not None:
+        progress.close()
 
     arr = np.array(vecs, dtype=np.float32)
     logger.info(f"Embedding completed: {arr.shape[0]} vectors with {arr.shape[1]} dimensions")
@@ -545,7 +554,10 @@ def upsert_to_qdrant_batched(client: QdrantClient, name: str, chats: List[Chat],
 
     print(f"Upserting {total_points} points to Qdrant in batches of {QDRANT_BATCH_SIZE}")
 
-    for start_idx in tqdm(range(0, total_points, QDRANT_BATCH_SIZE), desc="Upserting to Qdrant"):
+    total_batches = math.ceil(total_points / QDRANT_BATCH_SIZE)
+    progress = tqdm(total=total_batches, desc="Upserting to Qdrant") if total_batches > 1 else None
+
+    for start_idx in range(0, total_points, QDRANT_BATCH_SIZE):
         end_idx = min(start_idx + QDRANT_BATCH_SIZE, total_points)
         batch_chats = chats[start_idx:end_idx]
         batch_vectors = vectors[start_idx:end_idx]
@@ -577,6 +589,12 @@ def upsert_to_qdrant_batched(client: QdrantClient, name: str, chats: List[Chat],
                     batch_num = start_idx // QDRANT_BATCH_SIZE + 1
                     print(f"\nUpsert batch {batch_num} attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
+
+        if progress is not None:
+            progress.update(1)
+
+    if progress is not None:
+        progress.close()
 
     print(f"Successfully upserted {total_points} points to Qdrant collection '{name}'")
 
@@ -919,10 +937,15 @@ def categorize_chats(
         texts_to_embed = [f"{c.title}\n\n{c.prompt_excerpt}" if c.prompt_excerpt else c.title for c in chats_to_embed]
         batches = build_embedding_batches(texts_to_embed, embedding_batch_words)
         total_batches = len(batches)
+        total_to_process = len(chats_to_embed)
         print(
             "Embedding "
-            f"{len(chats_to_embed)} new chats across {total_batches} batches "
+            f"{total_to_process} new chats across {total_batches} batches "
             f"(~{embedding_batch_words} words each, parallelism={embedding_batch_parallelism})"
+        )
+
+        progress = (
+            tqdm(total=total_to_process, desc="Embedding & upserting", unit="chat") if total_to_process > 0 else None
         )
 
         shared_client: Optional[OpenAI] = None
@@ -937,44 +960,58 @@ def categorize_chats(
             batch_texts = [texts_to_embed[i] for i in indices]
             return embed_chats_with_retry(local_client, batch_texts)
 
-        for start_idx in range(0, total_batches, embedding_batch_parallelism):
-            group = batches[start_idx : start_idx + embedding_batch_parallelism]
-            batch_outputs: Dict[Tuple[int, ...], np.ndarray] = {}
+        try:
+            for start_idx in range(0, total_batches, embedding_batch_parallelism):
+                group = batches[start_idx : start_idx + embedding_batch_parallelism]
+                batch_outputs: Dict[Tuple[int, ...], np.ndarray] = {}
 
-            if len(group) == 1 and embedding_batch_parallelism == 1:
-                indices = group[0]
-                key = tuple(indices)
-                batch_outputs[key] = embed_batch(indices, shared_client)
-            else:
-                with ThreadPoolExecutor(max_workers=len(group)) as executor:
-                    future_to_key = {executor.submit(embed_batch, indices, None): tuple(indices) for indices in group}
-                    for future, key in future_to_key.items():
-                        batch_outputs[key] = future.result()
+                if len(group) == 1 and embedding_batch_parallelism == 1:
+                    indices = group[0]
+                    key = tuple(indices)
+                    batch_outputs[key] = embed_batch(indices, shared_client)
+                else:
+                    with ThreadPoolExecutor(max_workers=len(group)) as executor:
+                        future_to_key = {
+                            executor.submit(embed_batch, indices, None): tuple(indices) for indices in group
+                        }
+                        for future, key in future_to_key.items():
+                            batch_outputs[key] = future.result()
 
-            for indices in group:
-                key = tuple(indices)
-                embeddings = batch_outputs[key]
-                if embeddings.ndim != 2 or embeddings.shape[0] != len(indices):
-                    raise RuntimeError("Embedding batch shape mismatch")
+                for indices in group:
+                    key = tuple(indices)
+                    embeddings = batch_outputs[key]
+                    if embeddings.ndim != 2 or embeddings.shape[0] != len(indices):
+                        raise RuntimeError("Embedding batch shape mismatch")
 
-                for local_idx, vector in zip(indices, embeddings):
-                    chat = chats_to_embed[local_idx]
-                    cached_vectors[chat.id] = np.asarray(vector, dtype=np.float32)
+                    subset_chats = [chats_to_embed[i] for i in indices]
+                    for chat, vector in zip(subset_chats, embeddings):
+                        cached_vectors[chat.id] = np.asarray(vector, dtype=np.float32)
 
-                if persist_enabled:
-                    try:
-                        if not collection_ready:
+                    if persist_enabled:
+                        try:
+                            if not collection_ready:
+                                assert qcli is not None
+                                ensure_qdrant_collection(qcli, collection, embeddings.shape[1])
+                                collection_ready = True
+
                             assert qcli is not None
-                            ensure_qdrant_collection(qcli, collection, embeddings.shape[1])
-                            collection_ready = True
+                            upsert_to_qdrant(
+                                qcli,
+                                collection,
+                                subset_chats,
+                                embeddings.astype(np.float32, copy=False),
+                            )
+                        except Exception as e:
+                            print(f"\nWarning: Qdrant operation failed: {e}")
+                            print("Continuing without Qdrant persistence (embeddings kept in-memory only)...")
+                            persist_enabled = False
 
-                        subset_chats = [chats_to_embed[i] for i in indices]
-                        assert qcli is not None
-                        upsert_to_qdrant(qcli, collection, subset_chats, embeddings.astype(np.float32, copy=False))
-                    except Exception as e:
-                        print(f"\nWarning: Qdrant operation failed: {e}")
-                        print("Continuing without Qdrant persistence (embeddings kept in-memory only)...")
-                        persist_enabled = False
+                    if progress is not None:
+                        for _ in subset_chats:
+                            progress.update(1)
+        finally:
+            if progress is not None:
+                progress.close()
 
     missing_after = [c.id for c in chats if c.id not in cached_vectors]
     if missing_after:

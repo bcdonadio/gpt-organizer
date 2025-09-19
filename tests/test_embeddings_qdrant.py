@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, Sequence, TypeAlias, TypeVar, cast
+from typing import Any, Iterable, Iterator, Sequence, TypeAlias, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,7 +12,8 @@ import pytest
 
 import GptCategorize.categorize as categorize
 
-T = TypeVar("T")
+CREATED_PROGRESS: list[Any] = []
+
 FloatArray: TypeAlias = NDArray[np.float64]
 
 
@@ -19,14 +21,83 @@ FloatArray: TypeAlias = NDArray[np.float64]
 def patch_tqdm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid noisy tqdm output during tests."""
 
-    def passthrough(iterable: Iterable[T] | None = None, **_: object) -> Iterable[T] | None:
-        return iterable
+    CREATED_PROGRESS.clear()
 
-    monkeypatch.setattr(categorize, "tqdm", passthrough, raising=False)
+    class DummyProgress:
+        def __init__(self, iterable: Iterable[Any] | None = None, **kwargs: object) -> None:
+            self._iterable = iterable
+            self.total: object | None = kwargs.get("total")
+            self.count = 0
+            self.closed = False
+
+        def update(self, amount: int = 1) -> None:
+            self.count += amount
+
+        def close(self) -> None:  # pragma: no cover - nothing to clean up
+            self.closed = True
+
+        def __iter__(self) -> Iterator[Any]:
+            if self._iterable is None:
+                return iter(())
+            return iter(self._iterable)
+
+    def fake_tqdm(iterable: Iterable[Any] | None = None, **kwargs: object) -> DummyProgress:
+        prog = DummyProgress(iterable, **kwargs)
+        CREATED_PROGRESS.append(prog)
+        return prog
+
+    monkeypatch.setattr(categorize, "tqdm", fake_tqdm, raising=False)
 
 
 def _make_embedding_response(vectors: Sequence[Sequence[float]]) -> SimpleNamespace:
     return SimpleNamespace(data=[SimpleNamespace(embedding=list(v)) for v in vectors])
+
+
+def test_categorize_chats_reports_progress(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Progress bars should count chats as they are embedded and upserted."""
+
+    chats = [
+        categorize.Chat(id="chat-a", title="Alpha", prompt_excerpt="First message"),
+        categorize.Chat(id="chat-b", title="Beta", prompt_excerpt="Second message"),
+    ]
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+
+    def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
+        assert len(texts) == len(chats)
+        return np.ones((len(texts), 2), dtype=np.float32)
+
+    def fake_cluster(vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
+        assert vectors.shape[0] == len(chats)
+        return np.zeros(vectors.shape[0], dtype=int)
+
+    def fake_label(_: Any, clusters: dict[int, list[categorize.Chat]]) -> dict[int, dict[str, object]]:
+        return {
+            0: {
+                "label": "Alpha Beta",
+                "project_folder_slug": "alpha-beta",
+                "project_title": "Alpha Beta",
+                "confidence_model": 0.9,
+            }
+        }
+
+    monkeypatch.setattr(categorize, "get_embedding_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
+    monkeypatch.setattr(categorize, "cluster_embeddings", fake_cluster)
+    monkeypatch.setattr(categorize, "cluster_text_cohesion", lambda *_args, **_kwargs: 0.8)
+    monkeypatch.setattr(categorize, "temporal_cohesion", lambda *_args, **_kwargs: 0.7)
+    monkeypatch.setattr(categorize, "get_inference_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(categorize, "label_clusters_with_llm", fake_label)
+
+    out_path = tmp_path / "plan.json"
+    code = categorize.categorize_chats("ignored.json", out=str(out_path), no_qdrant=True)
+    assert code == 0
+
+    matching = [prog for prog in CREATED_PROGRESS if prog.total == len(chats)]
+    assert matching, "Expected a progress bar sized to chat count"
+    tracker = matching[0]
+    assert tracker.count == len(chats)
+    assert tracker.closed is True
 
 
 def test_embed_chats_with_retry_success(monkeypatch: pytest.MonkeyPatch) -> None:
