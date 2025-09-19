@@ -10,6 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -20,7 +21,7 @@ from tqdm import tqdm
 __path__: List[str] = []
 
 # scikit-learn
-import hdbscan  # type: ignore[import-untyped]
+import hdbscan as _hdbscan  # type: ignore[import-untyped]
 from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
 
@@ -28,6 +29,9 @@ from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
 from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
+
+# Re-export for test monkeypatching and typing clarity.
+hdbscan: ModuleType = _hdbscan
 
 # ===============================
 # Constants (edit to your setup)
@@ -943,9 +947,7 @@ def categorize_chats(
                 batch_outputs[key] = embed_batch(indices, shared_client)
             else:
                 with ThreadPoolExecutor(max_workers=len(group)) as executor:
-                    future_to_key = {
-                        executor.submit(embed_batch, indices, None): tuple(indices) for indices in group
-                    }
+                    future_to_key = {executor.submit(embed_batch, indices, None): tuple(indices) for indices in group}
                     for future, key in future_to_key.items():
                         batch_outputs[key] = future.result()
 

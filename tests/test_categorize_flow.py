@@ -81,9 +81,7 @@ def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.Mon
         vectors = np.stack([np.array([val, val + 0.1], dtype=float) for val in values], axis=0)
         return vectors.astype(np.float32)
 
-    def fake_cluster(
-        vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def fake_cluster(vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         assert vectors.shape[0] == 2  # limit applied before clustering
         return np.zeros(vectors.shape[0], dtype=int)
 
@@ -145,9 +143,7 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path: Path, monkeypatch
     def fake_embed(_: Any, __: Sequence[str], batch_size: int = 96) -> np.ndarray:
         return np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]], dtype=float)
 
-    def fake_clusters(
-        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def fake_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array([0, 0, -1])
 
     def fake_text_cohesion(_: np.ndarray, *, labels_mapped: np.ndarray, cid: int) -> float:
@@ -223,9 +219,7 @@ def test_embedding_batches_wait_for_qdrant(tmp_path: Path, monkeypatch: pytest.M
         vectors = np.array([[float(idx + 1), 0.0] for idx, _ in enumerate(ids)], dtype=np.float32)
         return vectors
 
-    def fake_cluster(
-        vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def fake_cluster(vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         assert vectors.shape[0] == len(chats)
         return np.zeros(vectors.shape[0], dtype=int)
 
@@ -296,10 +290,7 @@ def test_embedding_batch_failure_disables_qdrant(
     """A failed upsert disables further persistence but keeps embedding batches flowing."""
 
     out_path = tmp_path / "plan.json"
-    chats = [
-        categorize.Chat(id=f"chat-{idx}", title=f"Title {idx}", prompt_excerpt=f"body {idx}")
-        for idx in range(3)
-    ]
+    chats = [categorize.Chat(id=f"chat-{idx}", title=f"Title {idx}", prompt_excerpt=f"body {idx}") for idx in range(3)]
 
     monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
 
@@ -359,7 +350,11 @@ def test_embedding_batch_shape_mismatch(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
-    monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_args, **_kwargs: np.zeros((0, 2), dtype=np.float32))
+    monkeypatch.setattr(
+        categorize,
+        "embed_chats_with_retry",
+        lambda *_args, **_kwargs: np.zeros((0, 2), dtype=np.float32),
+    )
 
     with pytest.raises(RuntimeError, match="Embedding batch shape mismatch"):
         categorize.categorize_chats(
@@ -439,9 +434,7 @@ def test_categorize_chats_handles_failures_and_fallback(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.ones((2, 2), dtype=float))
 
-    def fallback_clusters(
-        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def fallback_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", fallback_clusters)
@@ -512,9 +505,7 @@ def test_categorize_chats_warns_on_qdrant_cache_failure(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
 
-    def warn_clusters(
-        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def warn_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", warn_clusters)
@@ -591,9 +582,7 @@ def test_categorize_chats_handles_upsert_failure(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.ones((2, 2), dtype=float))
 
-    def resilient_clusters(
-        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def resilient_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", resilient_clusters)
@@ -653,9 +642,7 @@ def test_categorize_prints_summary_for_many_moves(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.array(embeddings, dtype=float))
 
-    def many_clusters(
-        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
-    ) -> np.ndarray:
+    def many_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array(labels)
 
     monkeypatch.setattr(categorize, "cluster_embeddings", many_clusters)

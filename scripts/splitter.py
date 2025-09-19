@@ -12,9 +12,7 @@ JSONDict = dict[str, Any]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Split a ChatGPT conversations export into individual conversation files."
-        )
+        description=("Split a ChatGPT conversations export into individual conversation files.")
     )
     parser.add_argument(
         "--source",
@@ -56,9 +54,7 @@ def load_conversations(path: Path) -> list[JSONDict]:
         conversations = data.get("conversations")
         if isinstance(conversations, list):
             return _ensure_dict_list(conversations, '"conversations" list')
-        raise ValueError(
-            "JSON object does not contain a \"conversations\" list"
-        )
+        raise ValueError('JSON object does not contain a "conversations" list')
 
     raise ValueError("Unsupported JSON structure. Expected list or dict with conversations.")
 
@@ -67,9 +63,7 @@ def _ensure_dict_list(items: Iterable[Any], context: str) -> list[JSONDict]:
     conversations: list[JSONDict] = []
     for index, item in enumerate(items):
         if not isinstance(item, dict):
-            raise ValueError(
-                f"Item at index {index} in {context} is not a JSON object: {type(item)!r}"
-            )
+            raise ValueError(f"Item at index {index} in {context} is not a JSON object: {type(item)!r}")
         conversations.append(item)
     return conversations
 
@@ -83,13 +77,9 @@ def _load_ndjson(path: Path) -> Iterator[JSONDict]:
             try:
                 data = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number} of {path}."
-                ) from exc
+                raise ValueError(f"Invalid JSON on line {line_number} of {path}.") from exc
             if not isinstance(data, dict):
-                raise ValueError(
-                    f"Line {line_number} of {path} is not a JSON object: {type(data)!r}"
-                )
+                raise ValueError(f"Line {line_number} of {path} is not a JSON object: {type(data)!r}")
             yield data
 
 
@@ -109,9 +99,7 @@ def write_conversations(
         conversation_id = _derive_identifier(conversation, index)
         filename = f"{index:04d}-{conversation_id}.json"
         if filename in existing_names:
-            raise ValueError(
-                f"Duplicate filename generated for conversations at index {index}: {filename}"
-            )
+            raise ValueError(f"Duplicate filename generated for conversations at index {index}: {filename}")
         existing_names.add(filename)
 
         destination = output_dir / filename

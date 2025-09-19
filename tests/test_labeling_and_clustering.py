@@ -39,9 +39,7 @@ def test_cluster_embeddings_uses_hdbscan_when_clusters_found(monkeypatch: pytest
     assert captured["kwargs"]["metric"] == "euclidean"
     assert captured["kwargs"]["min_samples"] == 1
     assert captured["kwargs"]["min_cluster_size"] == 2  # clamped
-    assert captured["kwargs"]["cluster_selection_epsilon"] == pytest.approx(
-        categorize.cosine_to_euclid_eps(0.2)
-    )
+    assert captured["kwargs"]["cluster_selection_epsilon"] == pytest.approx(categorize.cosine_to_euclid_eps(0.2))
 
 
 def test_cluster_embeddings_falls_back_to_kmeans(monkeypatch: pytest.MonkeyPatch) -> None:

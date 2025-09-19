@@ -2,8 +2,8 @@
 
 # Variables
 VENV_DIR := .venv
-PYTHON := $(VENV_DIR)/bin/python
 UV := uv
+UV_RUN := UV_CACHE_DIR=.uv-cache $(UV) run --frozen
 
 # Default target
 .PHONY: help
@@ -32,10 +32,10 @@ install-dev:
 check:
 	@echo "Running code quality checks..."
 	@TESTS=pass; \
-	$(PYTHON) -m black --check --diff . || TESTS=fail; \
-	$(PYTHON) -m flake8 . || TESTS=fail; \
-	$(PYTHON) -m mypy . --strict --show-error-codes --warn-unused-ignores || TESTS=fail; \
-	$(PYTHON) -m pyright || TESTS=fail; \
+	$(UV_RUN) python -m black --check --diff . || TESTS=fail; \
+	$(UV_RUN) python -m flake8 . || TESTS=fail; \
+	$(UV_RUN) python -m mypy . --strict --show-error-codes --warn-unused-ignores || TESTS=fail; \
+	$(UV_RUN) python -m pyright || TESTS=fail; \
 	if [ "$$TESTS" = "pass" ]; then \
 		echo 'All checks passed!'; \
 	else \
@@ -72,14 +72,15 @@ clean-all: clean
 
 # Format code (bonus target)
 .PHONY: format
+
 format:
-	$(PYTHON) -m black .
+	$(UV_RUN) python -m black .
 	@echo "Code formatted!"
 
 # Run tests (if any are added later)
 .PHONY: test
 test:
-		$(PYTHON) -m pytest -v
+	$(UV_RUN) python -m pytest -v
 
 # Check if virtual environment exists
 .PHONY: check-venv
