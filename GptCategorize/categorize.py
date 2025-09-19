@@ -19,7 +19,8 @@ from tqdm import tqdm
 __path__: List[str] = []
 
 # scikit-learn
-from sklearn.cluster import DBSCAN, KMeans  # type: ignore[import-untyped]
+import hdbscan  # type: ignore[import-untyped]
+from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 from sklearn.preprocessing import normalize  # type: ignore[import-untyped]
 
 # OpenAI + Qdrant
@@ -110,12 +111,12 @@ logger = logging.getLogger(__name__)
 # • "Already in a project" detection: we look for any of these fields on the conversation record
 #   (case-insensitive, nested OK): project_id, workspace_id, folder_id, project, workspace, folder.
 # • Embedding dimension for text-embedding-3-large is 3072.
-# • DBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance). We convert the
+# • HDBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance). We convert the
 #   cosine epsilon into an equivalent Euclidean epsilon automatically.
 # • Temporal cohesion uses an exponential decay over pairwise creation-time gaps:
 #     sim_ij = exp(- |Δt_days| / TIME_DECAY_DAYS )
 #   averaged over all pairs. The default TIME_DECAY_DAYS is 30.
-# • If DBSCAN finds nothing useful, we fall back to KMeans (k ≈ sqrt(N)).
+# • If HDBSCAN finds nothing useful, we fall back to KMeans (k ≈ sqrt(N)).
 # • Model prompts are constrained to return strict JSON that we parse.
 
 
@@ -545,17 +546,22 @@ def upsert_to_qdrant(client: QdrantClient, name: str, chats: List[Chat], vectors
 
 def cosine_to_euclid_eps(cos_eps: float) -> float:
     """For L2-normalized vectors, Euclid^2 ≈ 2 * (1 - cos_sim) = 2 * cos_dist.
-    Convert a cosine distance epsilon into an Euclidean epsilon for DBSCAN.
+    Convert a cosine distance epsilon into an Euclidean epsilon for density clustering.
     """
     cos_dist = max(cos_eps, 0.0)
     return math.sqrt(2.0 * cos_dist)
 
 
-def cluster_embeddings(vectors: np.ndarray, eps_cosine: float, min_samples: int) -> np.ndarray:
+def cluster_embeddings(vectors: np.ndarray, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
     v = normalize(vectors, norm="l2")
     eps_euclid = cosine_to_euclid_eps(eps_cosine)
-    db = DBSCAN(eps=eps_euclid, min_samples=min_samples, metric="euclidean")
-    labels = db.fit_predict(v)
+    clusterer = hdbscan.HDBSCAN(
+        metric="euclidean",
+        min_samples=max(1, int(min_samples)),
+        min_cluster_size=max(2, int(min_cluster_size)),
+        cluster_selection_epsilon=eps_euclid,
+    )
+    labels = clusterer.fit_predict(v)
     if (labels >= 0).sum() == 0:
         # Fallback: naive KMeans with k from sqrt(N)
         n = len(v)
@@ -758,6 +764,7 @@ def categorize_chats(
     no_qdrant: bool = False,
     eps_cosine: float = 0.25,
     min_samples: int = 2,
+    min_cluster_size: int = 2,
     confidence_threshold: float = 0.60,
     time_weight: float = 0.25,
     limit: int = 0,
@@ -769,8 +776,9 @@ def categorize_chats(
         out: Path to write the provisional plan JSON
         collection: Qdrant collection name for embeddings
         no_qdrant: Disable Qdrant persistence (embeddings kept only in-memory)
-        eps_cosine: DBSCAN epsilon in cosine distance space (0..2). Lower = tighter clusters
-        min_samples: DBSCAN min_samples (>=2 is sensible)
+        eps_cosine: HDBSCAN cluster_selection_epsilon in cosine distance space (0..2). Lower = tighter clusters
+        min_samples: HDBSCAN min_samples (>=1 is sensible)
+        min_cluster_size: HDBSCAN min_cluster_size (>=2)
         confidence_threshold: Minimum combined confidence to propose moves
         time_weight: Weight (0..1) given to temporal cohesion when computing cluster cohesion
         limit: Optional: limit number of chats processed (debug)
@@ -780,6 +788,8 @@ def categorize_chats(
     """
     # Clamp time-weight to [0,1]
     time_weight = max(0.0, min(1.0, float(time_weight)))
+    min_samples = max(1, int(min_samples))
+    min_cluster_size = max(2, int(min_cluster_size))
 
     # 1) Load chats from JSON
     chats_all = load_chats_from_conversations_json(conversations_json)
@@ -808,6 +818,7 @@ def categorize_chats(
             "parameters": {
                 "eps_cosine": eps_cosine,
                 "min_samples": min_samples,
+                "min_cluster_size": min_cluster_size,
                 "confidence_threshold": confidence_threshold,
                 "time_weight": time_weight,
                 "time_decay_days": TIME_DECAY_DAYS,
@@ -878,7 +889,12 @@ def categorize_chats(
     infer_client = get_inference_client()
 
     # 6) Cluster
-    labels = cluster_embeddings(vectors, eps_cosine=eps_cosine, min_samples=min_samples)
+    labels = cluster_embeddings(
+        vectors,
+        eps_cosine=eps_cosine,
+        min_samples=min_samples,
+        min_cluster_size=min_cluster_size,
+    )
 
     # Build contiguous cluster IDs (exclude -1 noise) and remap labels
     unique = sorted(set(int(x) for x in labels if int(x) != -1))
@@ -985,6 +1001,7 @@ def categorize_chats(
         "parameters": {
             "eps_cosine": eps_cosine,
             "min_samples": min_samples,
+            "min_cluster_size": min_cluster_size,
             "confidence_threshold": confidence_threshold,
             "time_weight": time_weight,
             "time_decay_days": TIME_DECAY_DAYS,

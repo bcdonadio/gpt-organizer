@@ -81,7 +81,9 @@ def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.Mon
         vectors = np.stack([np.array([val, val + 0.1], dtype=float) for val in values], axis=0)
         return vectors.astype(np.float32)
 
-    def fake_cluster(vectors: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def fake_cluster(
+        vectors: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         assert vectors.shape[0] == 2  # limit applied before clustering
         return np.zeros(vectors.shape[0], dtype=int)
 
@@ -118,6 +120,7 @@ def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.Mon
     plan = json.loads(out_path.read_text())
     cluster_chat_ids = [chat_info["id"] for chat_info in plan["clusters"][0]["chats"]]
     assert cluster_chat_ids == ["chat-0", "chat-1"]
+    assert plan["parameters"]["min_cluster_size"] == 2
     assert embed_calls and len(embed_calls[0]) == 2
     assert recorded_clusters == [["chat-0", "chat-1"]]
     assert "chat-2" not in json.dumps(plan)
@@ -142,7 +145,9 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path: Path, monkeypatch
     def fake_embed(_: Any, __: Sequence[str], batch_size: int = 96) -> np.ndarray:
         return np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]], dtype=float)
 
-    def fake_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def fake_clusters(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array([0, 0, -1])
 
     def fake_text_cohesion(_: np.ndarray, *, labels_mapped: np.ndarray, cid: int) -> float:
@@ -184,7 +189,7 @@ def test_categorize_chats_generates_plan_with_qdrant(tmp_path: Path, monkeypatch
     monkeypatch.setattr(categorize, "ensure_qdrant_collection", record_ensure)
     monkeypatch.setattr(categorize, "upsert_to_qdrant", record_upsert)
 
-    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False, min_cluster_size=1)
     assert code == 0
 
     plan = json.loads(out_path.read_text())
@@ -217,7 +222,9 @@ def test_categorize_chats_reuses_cached_embeddings(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(categorize, "get_embedding_client", partial(pytest.fail, "should not request embedding client"))
     monkeypatch.setattr(categorize, "embed_chats_with_retry", partial(pytest.fail, "should not embed"))
 
-    def fake_cluster_embeddings(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def fake_cluster_embeddings(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", fake_cluster_embeddings)
@@ -235,7 +242,7 @@ def test_categorize_chats_reuses_cached_embeddings(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(categorize, "ensure_qdrant_collection", partial(pytest.fail, "should not ensure"))
     monkeypatch.setattr(categorize, "upsert_to_qdrant", partial(pytest.fail, "should not upsert"))
 
-    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False, min_cluster_size=1)
     assert code == 0
 
     plan = json.loads(out_path.read_text())
@@ -259,7 +266,9 @@ def test_categorize_chats_handles_failures_and_fallback(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.ones((2, 2), dtype=float))
 
-    def fallback_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def fallback_clusters(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", fallback_clusters)
@@ -283,11 +292,12 @@ def test_categorize_chats_handles_failures_and_fallback(
     monkeypatch.setattr(categorize, "label_clusters_with_llm", failing_label)
     monkeypatch.setattr(categorize, "get_qdrant_client_with_timeout", fail_qdrant_client)
 
-    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False)
+    code = categorize.categorize_chats(str(path), out=str(out_path), no_qdrant=False, min_cluster_size=1)
     assert code == 0
 
     plan = json.loads(out_path.read_text())
     assert plan["proposed_moves"] == []
+    assert plan["parameters"]["min_cluster_size"] == 2
     assert set(plan["skipped"]["clusters_low_confidence"]) == {"0", "99"}
     captured = capsys.readouterr().out
     assert "Continuing without Qdrant" in captured
@@ -329,7 +339,9 @@ def test_categorize_chats_warns_on_qdrant_cache_failure(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
 
-    def warn_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def warn_clusters(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", warn_clusters)
@@ -406,7 +418,9 @@ def test_categorize_chats_handles_upsert_failure(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.ones((2, 2), dtype=float))
 
-    def resilient_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def resilient_clusters(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array([0, 0])
 
     monkeypatch.setattr(categorize, "cluster_embeddings", resilient_clusters)
@@ -466,7 +480,9 @@ def test_categorize_prints_summary_for_many_moves(
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.array(embeddings, dtype=float))
 
-    def many_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int) -> np.ndarray:
+    def many_clusters(
+        _: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int
+    ) -> np.ndarray:
         return np.array(labels)
 
     monkeypatch.setattr(categorize, "cluster_embeddings", many_clusters)
@@ -529,6 +545,8 @@ def test_entry_main_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
         "0.4",
         "--min-samples",
         "4",
+        "--min-cluster-size",
+        "6",
         "--confidence-threshold",
         "0.6",
         "--time-weight",
@@ -543,6 +561,7 @@ def test_entry_main_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     assert exit_code == 7
     assert called["no_qdrant"] is True
     assert called["collection"] == "col"
+    assert called["min_cluster_size"] == 6
 
 
 def test_entry_main_module_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

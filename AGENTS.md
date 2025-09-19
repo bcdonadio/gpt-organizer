@@ -73,8 +73,9 @@ Handled by [`main.main()`](main.py:119):
 - `--out PATH` (default: `provisional_move_plan.json`)
 - `--collection NAME` (default: [`QDRANT_COLLECTION`](GptCategorize/categorize.py:41))
 - `--no-qdrant` (compute-only; skip persistence)
-- `--eps-cosine FLOAT` (default: 0.25) — DBSCAN epsilon in cosine distance; converted by [`cosine_to_euclid_eps()`](GptCategorize/categorize.py:497)
+- `--eps-cosine FLOAT` (default: 0.25) — HDBSCAN cluster_selection_epsilon in cosine distance; converted by [`cosine_to_euclid_eps()`](GptCategorize/categorize.py:497)
 - `--min-samples INT` (default: 2)
+- `--min-cluster-size INT` (default: 2)
 - `--confidence-threshold FLOAT` (default: 0.60)
 - `--time-weight FLOAT` (default: 0.25)
 - `--limit INT` (default: 0) — process first N chats
@@ -133,7 +134,7 @@ Defined near the top of [`categorize.py`](GptCategorize/categorize.py:31):
 
 6) Clustering
    - [`cluster_embeddings()`](GptCategorize/categorize.py:505)
-   - KMeans fallback with `random_state=42` on degenerate DBSCAN
+   - KMeans fallback with `random_state=42` if HDBSCAN yields only noise
 
 7) Cohesion metrics
    - [`cluster_text_cohesion()`](GptCategorize/categorize.py:519)
@@ -161,7 +162,7 @@ Defined near the top of [`categorize.py`](GptCategorize/categorize.py:31):
   - Temperature = 0.2. Fallback labels maintain continuity.
 
 - Determinism:
-  - KMeans fallback uses `random_state=42`. DBSCAN is deterministic given inputs.
+  - KMeans fallback uses `random_state=42`. HDBSCAN is deterministic given inputs.
 
 - Large inputs:
   - Use `--limit` during orchestration to bound runtime and cost.
@@ -195,6 +196,7 @@ uv run python ./main.py \
 uv run python ./main.py \
   --conversations-json ./conversations.json \
   --eps-cosine 0.2 --min-samples 3 \
+  --min-cluster-size 3 \
   --confidence-threshold 0.7
 ```
 

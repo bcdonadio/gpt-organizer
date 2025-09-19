@@ -138,6 +138,24 @@ def _ensure_sklearn_stub() -> None:
     sys.modules["sklearn.preprocessing"] = preprocessing_stub
 
 
+def _ensure_hdbscan_stub() -> None:
+    if "hdbscan" in sys.modules:
+        return
+
+    hdbscan_stub = types.ModuleType("hdbscan")
+
+    class _HDBSCAN:  # pragma: no cover - minimal stand-in
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
+            """Minimal stub that accepts arbitrary arguments."""
+
+        def fit_predict(self, vectors: Sequence[Sequence[float]] | NDArray[Any]) -> NDArray[np.int_]:
+            n = len(vectors)
+            return np.zeros(n, dtype=int)
+
+    setattr(hdbscan_stub, "HDBSCAN", _HDBSCAN)
+    sys.modules["hdbscan"] = hdbscan_stub
+
+
 def pytest_configure() -> None:
     """Install compatibility stubs before pytest starts collecting tests."""
 
@@ -145,3 +163,4 @@ def pytest_configure() -> None:
     _ensure_qdrant_stub()
     _ensure_tqdm_stub()
     _ensure_sklearn_stub()
+    _ensure_hdbscan_stub()

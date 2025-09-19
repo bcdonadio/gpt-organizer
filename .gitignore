@@ -10,6 +10,7 @@ wheels/
 .venv
 
 # Chats
+conversations/
 **/conversations*.json
 **/*_plan.json
 

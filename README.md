@@ -14,7 +14,7 @@ Primary CLI entry: [main.main()](main.py:119). Core logic: [GptCategorize.catego
 - Reads ChatGPT conversations from a JSON file you exported (see Export guide below).
 - Skips chats that already belong to a project/workspace/folder (heuristics on common fields).
 - Reuses embeddings cached in Qdrant when available, and only embeds remaining chats using `EMBEDDING_MODEL` (default: `text-embedding-3-large`) via a dedicated API base/key.
-- Clusters chats via DBSCAN in Euclidean space over L2-normalized embeddings (≈ cosine distance), with KMeans fallback.
+- Clusters chats via HDBSCAN in Euclidean space over L2-normalized embeddings (≈ cosine distance), with KMeans fallback.
 - Labels clusters with an inference LLM (default: `gpt-5-latest`) and proposes project folder slugs.
 - Computes cluster cohesion from text similarity and temporal proximity (weighted, tunable).
 - Emits a provisional move plan JSON (no actual moves performed).
@@ -75,12 +75,12 @@ uv run python ./main.py \
   --out ./move_plan.json
 ```
 
-Tune clustering (lower cosine eps → tighter clusters):
+Tune clustering (lower cosine eps → tighter HDBSCAN clusters):
 
 ```bash
 uv run python ./main.py \
   --conversations-json ./conversations.json \
-  --eps-cosine 0.22 --min-samples 2
+  --eps-cosine 0.22 --min-samples 2 --min-cluster-size 2
 ```
 
 Increase time weight (more emphasis on temporal proximity):
@@ -109,8 +109,9 @@ Options:
 - --out PATH (default: `provisional_move_plan.json`) — output plan file
 - --collection NAME (default: [GptCategorize.QDRANT_COLLECTION](GptCategorize/categorize.py:41)) — Qdrant collection
 - --no-qdrant — disable Qdrant persistence
-- --eps-cosine FLOAT (default: 0.25) — DBSCAN epsilon in cosine distance (0..2); lower → tighter clusters
-- --min-samples INT (default: 2) — DBSCAN min_samples
+- --eps-cosine FLOAT (default: 0.25) — HDBSCAN cluster_selection_epsilon in cosine distance (0..2); lower → tighter clusters
+- --min-samples INT (default: 2) — HDBSCAN min_samples
+- --min-cluster-size INT (default: 2) — HDBSCAN min_cluster_size
 - --confidence-threshold FLOAT (default: 0.60) — minimum combined confidence to propose moves
 - --time-weight FLOAT (default: 0.25) — weight (0..1) applied to temporal cohesion
 - --limit INT (default: 0) — process only first N chats (debug)
@@ -198,6 +199,7 @@ The tool writes a JSON plan (default `./provisional_move_plan.json`) with the sc
   "parameters": {
     "eps_cosine": 0.25,
     "min_samples": 2,
+    "min_cluster_size": 2,
     "confidence_threshold": 0.6,
     "time_weight": 0.25,
     "time_decay_days": 30
@@ -236,8 +238,8 @@ The tool writes a JSON plan (default `./provisional_move_plan.json`) with the sc
 ## Notes and caveats
 
 - Already-in-project detection checks common fields (case-insensitive, nested OK): `project_id`, `workspace_id`, `folder_id`, `project`, `workspace`, `folder`. See source comments in [GptCategorize/categorize.py](GptCategorize/categorize.py) around lines 105–124 and implementation in [_detect_projectish()](GptCategorize/categorize.py:178).
-- DBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance); epsilon is auto-converted from cosine to Euclidean. See [GptCategorize.cosine_to_euclid_eps()](GptCategorize/categorize.py:497).
-- If DBSCAN yields no useful clusters, we fallback to KMeans with k ≈ √N.
+- HDBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance); epsilon is auto-converted from cosine to Euclidean. See [GptCategorize.cosine_to_euclid_eps()](GptCategorize/categorize.py:497).
+- If HDBSCAN yields no useful clusters, we fallback to KMeans with k ≈ √N.
 - There is currently no public API to list personal ChatGPT conversations; data export is the reliable route.
 - This project does not move chats. A future module will handle execution: see [GptMove/__init__.py](GptMove/__init__.py).
 

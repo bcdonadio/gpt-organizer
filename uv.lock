@@ -57,6 +57,7 @@ wheels = [
 name = "chatgpt-organizer"
 source = { editable = "." }
 dependencies = [
+    { name = "hdbscan" },
     { name = "numpy" },
     { name = "openai" },
     { name = "qdrant-client" },
@@ -79,6 +80,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "hdbscan", specifier = ">=0.8.38" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "qdrant-client", specifier = ">=1.7.0" },
@@ -257,6 +259,18 @@ sdist = { url = "https://files.pythonhosted.org/packages/1d/17/afa56379f94ad0fe8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/b2/119f6e6dcbd96f9069ce9a2665e0146588dc9f88f29549711853645e736a/h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd", size = 61779, upload-time = "2025-08-23T18:12:17.779Z" },
 ]
+
+[[package]]
+name = "hdbscan"
+version = "0.8.40"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/84/6b010387b795f774e1ec695df3c8660c15abd041783647d5e7e4076bfc6b/hdbscan-0.8.40.tar.gz", hash = "sha256:c9e383ff17beee0591075ff65d524bda5b5a35dfb01d218245a7ba30c8d48a17", size = 6904096, upload-time = "2024-11-18T16:14:05.384Z" }
 
 [[package]]
 name = "hpack"

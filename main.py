@@ -12,8 +12,8 @@ What this program does
 3) Creates embeddings for each chat's title plus the first 250 words of the
    initial user prompt using **text-embedding-3-large** (via a dedicated
    Embeddings API base/key), and optionally persists vectors into local **Qdrant**.
-4) Clusters chats (DBSCAN over L2-normalized embeddings ≈ cosine distance),
-   falling back to KMeans if DBSCAN yields nothing useful.
+4) Clusters chats (HDBSCAN over L2-normalized embeddings ≈ cosine distance),
+   falling back to KMeans if HDBSCAN yields nothing useful.
 5) Uses **gpt-5-mini** (via a separate Inference API base/key) to label clusters
    and propose project folder slugs.
 6) Computes **cluster cohesion** as a weighted blend of:
@@ -79,10 +79,10 @@ python ./main.py \
   --conversations-json conversations.json \
   --out move_plan.json
 
-# Tune clustering (cosine threshold ~ lower = tighter clusters)
+# Tune clustering (lower cosine epsilon = tighter HDBSCAN clusters)
 python ./main.py \
   --conversations-json conversations.json \
-  --eps-cosine 0.22 --min-samples 2
+  --eps-cosine 0.22 --min-samples 2 --min-cluster-size 2
 
 # Add a bit more emphasis on temporal proximity (default is 0.25)
 python ./main.py \
@@ -96,12 +96,12 @@ Notes
 • "Already in a project" detection: we look for any of these fields on the conversation record
   (case-insensitive, nested OK): project_id, workspace_id, folder_id, project, workspace, folder.
 • Embedding dimension for text-embedding-3-large is 3072.
-• DBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance). We convert the
+• HDBSCAN runs in Euclidean space over L2-normalized embeddings (≈ cosine distance). We convert the
   cosine epsilon into an equivalent Euclidean epsilon automatically.
 • Temporal cohesion uses an exponential decay over pairwise creation-time gaps:
     sim_ij = exp(- |Δt_days| / TIME_DECAY_DAYS )
   averaged over all pairs. The default TIME_DECAY_DAYS is 30.
-• If DBSCAN finds nothing useful, we fall back to KMeans (k ≈ sqrt(N)).
+• If HDBSCAN finds nothing useful, we fall back to KMeans (k ≈ sqrt(N)).
 • Model prompts are constrained to return strict JSON that we parse.
 
 Caveats
@@ -147,14 +147,21 @@ def main() -> int:
         "-e",
         type=float,
         default=0.25,
-        help="DBSCAN epsilon in cosine distance space (0..2). Lower = tighter clusters.",
+        help="HDBSCAN cluster_selection_epsilon in cosine distance space (0..2). Lower = tighter clusters.",
     )
     p.add_argument(
         "--min-samples",
         "-m",
         type=int,
         default=2,
-        help="DBSCAN min_samples (>=2 is sensible).",
+        help="HDBSCAN min_samples (>=1 is sensible).",
+    )
+    p.add_argument(
+        "--min-cluster-size",
+        "-k",
+        type=int,
+        default=2,
+        help="HDBSCAN min_cluster_size (>=2).",
     )
     p.add_argument(
         "--confidence-threshold",
@@ -188,6 +195,7 @@ def main() -> int:
         no_qdrant=args.no_qdrant,
         eps_cosine=args.eps_cosine,
         min_samples=args.min_samples,
+        min_cluster_size=args.min_cluster_size,
         confidence_threshold=args.confidence_threshold,
         time_weight=args.time_weight,
         limit=args.limit,

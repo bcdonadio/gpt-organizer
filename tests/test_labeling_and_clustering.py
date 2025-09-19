@@ -13,27 +13,41 @@ import pytest
 import GptCategorize.categorize as categorize
 
 
-def test_cluster_embeddings_uses_dbscan_when_clusters_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DBSCAN results should be returned when it finds clusters."""
+def test_cluster_embeddings_uses_hdbscan_when_clusters_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HDBSCAN results should be returned when it finds clusters."""
 
-    class DummyDBSCAN:
+    captured: dict[str, Any] = {}
+
+    class DummyHDBSCAN:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            self.args = args
-            self.kwargs = kwargs
+            captured["args"] = args
+            captured["kwargs"] = kwargs
 
         def fit_predict(self, vectors: NDArray[np.float64]) -> NDArray[np.int_]:
             return np.array([0, 0, 1])
 
-    monkeypatch.setattr(categorize, "DBSCAN", DummyDBSCAN)
+    monkeypatch.setattr(categorize.hdbscan, "HDBSCAN", DummyHDBSCAN)
 
-    labels = categorize.cluster_embeddings(np.eye(3), eps_cosine=0.2, min_samples=2)
+    labels = categorize.cluster_embeddings(
+        np.eye(3),
+        eps_cosine=0.2,
+        min_samples=1,
+        min_cluster_size=1,
+    )
+
     assert np.array_equal(labels, np.array([0, 0, 1]))
+    assert captured["kwargs"]["metric"] == "euclidean"
+    assert captured["kwargs"]["min_samples"] == 1
+    assert captured["kwargs"]["min_cluster_size"] == 2  # clamped
+    assert captured["kwargs"]["cluster_selection_epsilon"] == pytest.approx(
+        categorize.cosine_to_euclid_eps(0.2)
+    )
 
 
 def test_cluster_embeddings_falls_back_to_kmeans(monkeypatch: pytest.MonkeyPatch) -> None:
-    """If DBSCAN finds only noise, the fallback KMeans path is used."""
+    """If HDBSCAN finds only noise, the fallback KMeans path is used."""
 
-    class NoiseDBSCAN:
+    class NoiseHDBSCAN:
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
@@ -48,10 +62,15 @@ def test_cluster_embeddings_falls_back_to_kmeans(monkeypatch: pytest.MonkeyPatch
             n = len(vectors)
             return np.arange(n) % self.n_clusters
 
-    monkeypatch.setattr(categorize, "DBSCAN", NoiseDBSCAN)
+    monkeypatch.setattr(categorize.hdbscan, "HDBSCAN", NoiseHDBSCAN)
     monkeypatch.setattr(categorize, "KMeans", DummyKMeans)
 
-    labels = categorize.cluster_embeddings(np.eye(4), eps_cosine=0.3, min_samples=2)
+    labels = categorize.cluster_embeddings(
+        np.eye(4),
+        eps_cosine=0.3,
+        min_samples=2,
+        min_cluster_size=2,
+    )
     assert set(labels) == {0, 1}
 
 
