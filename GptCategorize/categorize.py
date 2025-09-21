@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -208,51 +208,192 @@ def _detect_projectish(obj: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _first_user_prompt(obj: Dict[str, Any], max_words: int = 250) -> Optional[str]:
-    """Extract the first user message truncated to ``max_words`` words."""
-    messages: List[Dict[str, Any]] = []
+def _value_has_excluded_keyword(value: Optional[str]) -> bool:
+    """Return ``True`` when ``value`` contains keywords that should be excluded."""
+
+    if not isinstance(value, str):
+        return False
+
+    lowered = value.lower()
+    excluded_keywords = ("system", "search", "web", "result", "source", "thinking", "thought")
+    return any(keyword in lowered for keyword in excluded_keywords)
+
+
+def _extract_text_parts(content: Any) -> List[str]:
+    """Extract textual fragments from diverse ``content`` payload shapes."""
+
+    fragments: List[str] = []
+
+    if content is None:
+        return fragments
+
+    if isinstance(content, str):
+        text = content.strip()
+        if text:
+            fragments.append(text)
+        return fragments
+
+    if isinstance(content, list):
+        for item in content:
+            fragments.extend(_extract_text_parts(item))
+        return fragments
+
+    if not isinstance(content, dict):
+        return fragments
+
+    content_type = content.get("content_type") or content.get("type")
+    if _value_has_excluded_keyword(str(content_type)):
+        return fragments
+
+    parts = content.get("parts")
+    if isinstance(parts, list):
+        for part in parts:
+            fragments.extend(_extract_text_parts(part))
+
+    text_value = content.get("text") or content.get("value")
+    if isinstance(text_value, str):
+        text = text_value.strip()
+        if text:
+            fragments.append(text)
+
+    data = content.get("data")
+    if isinstance(data, dict):
+        for key in ("code", "text"):
+            value = data.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    fragments.append(text)
+
+    return fragments
+
+
+def _message_text_if_allowed(message: Dict[str, Any]) -> Optional[str]:
+    """Return message text for user/assistant roles, skipping system/search/thinking content."""
+
+    author = message.get("author")
+    role = author.get("role") if isinstance(author, dict) else None
+    if role not in {"user", "assistant"}:
+        return None
+
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict):
+        metadata_strings = []
+        for key in ("message_type", "source", "message_source", "description"):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                metadata_strings.append(value)
+        flags = [metadata.get("is_thinking"), metadata.get("is_thought"), metadata.get("is_system_message")]
+        if any(bool(flag) for flag in flags if isinstance(flag, bool)):
+            return None
+        if any(_value_has_excluded_keyword(value) for value in metadata_strings):
+            return None
+
+    message_type = message.get("message_type")
+    if _value_has_excluded_keyword(message_type):
+        return None
+
+    content = message.get("content")
+    fragments = _extract_text_parts(content)
+    if not fragments:
+        return None
+
+    role_label = "User" if role == "user" else "Assistant"
+    combined = " ".join(fragment for fragment in fragments if fragment)
+    combined = combined.strip()
+    if not combined:
+        return None
+
+    return f"{role_label}: {combined}"
+
+
+def _conversation_excerpt(obj: Dict[str, Any], max_words: int = 250) -> Optional[str]:
+    """Return a conversation excerpt containing user and assistant messages.
+
+    Args:
+        obj: Conversation object from the ChatGPT export
+        max_words: Maximum words to include; ``0`` keeps the whole conversation
+    """
+
+    try:
+        max_words_int = int(max_words)
+    except Exception:
+        max_words_int = 250
+    if max_words_int < 0:
+        max_words_int = 0
+
+    collected: List[Tuple[Optional[float], int, Dict[str, Any]]] = []
+    seen_ids: Set[str] = set()
+    order = 0
+
+    def add_message(message: Any) -> None:
+        nonlocal order
+        if not isinstance(message, dict):
+            return
+        msg_id = message.get("id")
+        if isinstance(msg_id, str):
+            if msg_id in seen_ids:
+                return
+            seen_ids.add(msg_id)
+        timestamp = to_epoch(message.get("create_time"))
+        collected.append((timestamp, order, message))
+        order += 1
 
     msgs = obj.get("messages")
     if isinstance(msgs, list):
-        messages.extend([m for m in msgs if isinstance(m, dict)])
+        for msg in msgs:
+            add_message(msg)
 
     mapping = obj.get("mapping")
     if isinstance(mapping, dict):
-        for v in mapping.values():
-            msg = v.get("message") if isinstance(v, dict) else None
-            if isinstance(msg, dict):
-                messages.append(msg)
+        for entry in mapping.values():
+            message = entry.get("message") if isinstance(entry, dict) else None
+            add_message(message)
 
-    user_msgs: List[Tuple[Optional[float], str]] = []
-    for m in messages:
-        author = m.get("author")
-        role = author.get("role") if isinstance(author, dict) else None
-        if role != "user":
-            continue
-        text = ""
-        content = m.get("content")
-        if isinstance(content, dict):
-            parts = content.get("parts")
-            if isinstance(parts, list):
-                text = " ".join(str(p) for p in parts if isinstance(p, str))
-            elif isinstance(content.get("text"), str):
-                text = str(content.get("text"))
-        elif isinstance(content, str):
-            text = content
-        if not text:
-            continue
-        ct = to_epoch(m.get("create_time"))
-        user_msgs.append((ct, text))
-
-    if not user_msgs:
+    if not collected:
         return None
 
-    user_msgs.sort(key=lambda x: x[0] if x[0] is not None else float("inf"))
-    words = re.findall(r"\S+", user_msgs[0][1])
-    return " ".join(words[:max_words])
+    collected.sort(key=lambda item: (item[0] if item[0] is not None else float("inf"), item[1]))
+
+    text_blocks: List[str] = []
+    for _ts, _order, message in collected:
+        text = _message_text_if_allowed(message)
+        if text:
+            text_blocks.append(text)
+
+    if not text_blocks:
+        return None
+
+    if max_words_int == 0:
+        return "\n\n".join(text_blocks)
+
+    remaining = max_words_int
+    limited_blocks: List[str] = []
+    for block in text_blocks:
+        words = re.findall(r"\S+", block)
+        if not words:
+            continue
+        if len(words) <= remaining:
+            limited_blocks.append(block)
+            remaining -= len(words)
+        else:
+            truncated = " ".join(words[:remaining])
+            if truncated:
+                limited_blocks.append(truncated)
+            remaining = 0
+        if remaining == 0:
+            break
+
+    return "\n\n".join(limited_blocks) if limited_blocks else None
 
 
-def extract_chats_from_json_blob(data: Any) -> List[Chat]:
+def _first_user_prompt(obj: Dict[str, Any], max_words: int = 250) -> Optional[str]:
+    """Backward-compatible alias for ``_conversation_excerpt``."""
+
+    return _conversation_excerpt(obj, max_words=max_words)
+
+
+def extract_chats_from_json_blob(data: Any, conversation_word_limit: int = 250) -> List[Chat]:
     out: List[Chat] = []
 
     def convert_one(o: Dict[str, Any]) -> None:
@@ -265,7 +406,7 @@ def extract_chats_from_json_blob(data: Any) -> List[Chat]:
         ct = to_epoch(o.get("create_time") or o.get("created_at") or o.get("conversation", {}).get("create_time"))
         ut = to_epoch(o.get("update_time") or o.get("updated_at") or o.get("conversation", {}).get("update_time"))
         projectish = _detect_projectish(o)
-        prompt_excerpt = _first_user_prompt(o)
+        prompt_excerpt = _conversation_excerpt(o, max_words=conversation_word_limit)
         out.append(
             Chat(
                 id=str(cid),
@@ -297,7 +438,7 @@ def extract_chats_from_json_blob(data: Any) -> List[Chat]:
     return out
 
 
-def load_chats_from_conversations_json(path: str) -> List[Chat]:
+def load_chats_from_conversations_json(path: str, conversation_word_limit: int = 250) -> List[Chat]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"JSON file not found: {path}")
@@ -311,7 +452,7 @@ def load_chats_from_conversations_json(path: str) -> List[Chat]:
         lines = [json.loads(line) for line in blob.splitlines() if line.strip()]
         data = lines
 
-    chats = extract_chats_from_json_blob(data)
+    chats = extract_chats_from_json_blob(data, conversation_word_limit=conversation_word_limit)
 
     # Deduplicate by id (prefer latest update_time)
     dedup: Dict[str, Chat] = {}
@@ -835,6 +976,7 @@ def categorize_chats(
     limit: int = 0,
     embedding_batch_words: int = 512,
     embedding_batch_parallelism: int = 1,
+    conversation_word_limit: int = 250,
 ) -> int:
     """Core function to categorize ChatGPT chats by title and emit a provisional move plan.
 
@@ -851,6 +993,7 @@ def categorize_chats(
         limit: Optional: limit number of chats processed (debug)
         embedding_batch_words: Approximate number of words per embedding request batch
         embedding_batch_parallelism: Number of batches to embed/upload concurrently
+        conversation_word_limit: Words extracted per conversation for embeddings (0 = full conversation)
 
     Returns:
         Exit code (0 for success)
@@ -861,9 +1004,15 @@ def categorize_chats(
     min_cluster_size = max(2, int(min_cluster_size))
     embedding_batch_words = max(1, int(embedding_batch_words))
     embedding_batch_parallelism = max(1, int(embedding_batch_parallelism))
+    try:
+        conversation_word_limit = int(conversation_word_limit)
+    except Exception:
+        conversation_word_limit = 250
+    if conversation_word_limit < 0:
+        conversation_word_limit = 0
 
     # 1) Load chats from JSON
-    chats_all = load_chats_from_conversations_json(conversations_json)
+    chats_all = load_chats_from_conversations_json(conversations_json, conversation_word_limit=conversation_word_limit)
     source_desc = {
         "type": "conversations_json",
         "path": str(Path(conversations_json).resolve()),
@@ -895,6 +1044,7 @@ def categorize_chats(
                 "time_decay_days": TIME_DECAY_DAYS,
                 "embedding_batch_words": embedding_batch_words,
                 "embedding_batch_parallelism": embedding_batch_parallelism,
+                "conversation_word_limit": conversation_word_limit,
             },
             "collections": {"qdrant_collection": collection},
             "clusters": [],
@@ -1142,6 +1292,7 @@ def categorize_chats(
             "time_decay_days": TIME_DECAY_DAYS,
             "embedding_batch_words": embedding_batch_words,
             "embedding_batch_parallelism": embedding_batch_parallelism,
+            "conversation_word_limit": conversation_word_limit,
         },
         "collections": {"qdrant_collection": collection},
         "clusters": cluster_descs,  # type: ignore[dict-item]

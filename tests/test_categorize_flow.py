@@ -8,7 +8,7 @@ import sys
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 
 import numpy as np
 import pytest
@@ -56,6 +56,52 @@ def test_categorize_chats_handles_no_available_items(tmp_path: Path) -> None:
     assert sorted(plan["skipped"]["already_in_project"]) == ["chat-1", "chat-2"]
 
 
+def test_categorize_chats_normalizes_conversation_word_limit_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """String limits should coerce to the default and propagate to the plan."""
+
+    captured: list[int] = []
+
+    def fake_loader(_path: str, *, conversation_word_limit: int) -> list[categorize.Chat]:
+        captured.append(conversation_word_limit)
+        return []
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", fake_loader)
+
+    out_path = tmp_path / "plan.json"
+    code = categorize.categorize_chats(
+        "missing.json", out=str(out_path), no_qdrant=True, conversation_word_limit=cast(int, "oops")
+    )
+    assert code == 0
+    assert captured == [250]
+
+    plan = json.loads(out_path.read_text())
+    assert plan["parameters"]["conversation_word_limit"] == 250
+
+
+def test_categorize_chats_normalizes_conversation_word_limit_negative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative limits should clamp to zero for full transcripts."""
+
+    captured: list[int] = []
+
+    def fake_loader(_path: str, *, conversation_word_limit: int) -> list[categorize.Chat]:
+        captured.append(conversation_word_limit)
+        return []
+
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", fake_loader)
+
+    out_path = tmp_path / "plan.json"
+    code = categorize.categorize_chats("missing.json", out=str(out_path), no_qdrant=True, conversation_word_limit=-7)
+    assert code == 0
+    assert captured == [0]
+
+    plan = json.loads(out_path.read_text())
+    assert plan["parameters"]["conversation_word_limit"] == 0
+
+
 def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The limit flag should cap how many chats enter the processing pipeline."""
 
@@ -69,7 +115,7 @@ def test_categorize_chats_respects_limit(tmp_path: Path, monkeypatch: pytest.Mon
         categorize.Chat(id="chat-2", title="Gamma", prompt_excerpt="Third"),
     ]
 
-    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path, **_: list(chats))
 
     embed_calls: list[list[str]] = []
 
@@ -204,7 +250,7 @@ def test_embedding_batches_wait_for_qdrant(tmp_path: Path, monkeypatch: pytest.M
         for idx in range(4)
     ]
 
-    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path, **_: list(chats))
 
     def text_for(chat: categorize.Chat) -> str:
         return f"{chat.title}\n\n{chat.prompt_excerpt}" if chat.prompt_excerpt else chat.title
@@ -292,7 +338,7 @@ def test_embedding_batch_failure_disables_qdrant(
     out_path = tmp_path / "plan.json"
     chats = [categorize.Chat(id=f"chat-{idx}", title=f"Title {idx}", prompt_excerpt=f"body {idx}") for idx in range(3)]
 
-    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path, **_: list(chats))
 
     def text_for(chat: categorize.Chat) -> str:
         return f"{chat.title}\n\n{chat.prompt_excerpt}" if chat.prompt_excerpt else chat.title
@@ -348,7 +394,7 @@ def test_embedding_batch_shape_mismatch(tmp_path: Path, monkeypatch: pytest.Monk
     out_path = tmp_path / "plan.json"
     chats = [categorize.Chat(id="bad", title="One", prompt_excerpt="body")]
 
-    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path, **_: list(chats))
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
     monkeypatch.setattr(
         categorize,
@@ -640,7 +686,19 @@ def test_categorize_prints_summary_for_many_moves(
 
     monkeypatch.setattr(categorize, "get_inference_client", _simple_client)
     monkeypatch.setattr(categorize, "get_embedding_client", _simple_client)
-    monkeypatch.setattr(categorize, "embed_chats_with_retry", lambda *_: np.array(embeddings, dtype=float))
+
+    emb_iter = iter(embeddings)
+
+    def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
+        rows: list[list[float]] = []
+        for _ in texts:
+            try:
+                rows.append(next(emb_iter))
+            except StopIteration:  # pragma: no cover - defensive
+                rows.append([0.0, 0.0])
+        return np.array(rows, dtype=float)
+
+    monkeypatch.setattr(categorize, "embed_chats_with_retry", fake_embed)
 
     def many_clusters(_: np.ndarray, *, eps_cosine: float, min_samples: int, min_cluster_size: int) -> np.ndarray:
         return np.array(labels)

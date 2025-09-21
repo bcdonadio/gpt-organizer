@@ -9,8 +9,9 @@ What this program does
    - Export your data from ChatGPT, unzip it yourself, then pass the path to a
      JSON file that contains the conversation objects (commonly `conversations.json`).
 2) Skips any chats already assigned to a project/workspace/folder.
-3) Creates embeddings for each chat's title plus the first 250 words of the
-   initial user prompt using **text-embedding-3-large** (via a dedicated
+3) Creates embeddings for each chat's title plus a configurable portion of the
+   conversation transcript (default: first 250 words; 0 = full chat) using
+   **text-embedding-3-large** (via a dedicated
    Embeddings API base/key), and optionally persists vectors into local **Qdrant**.
 4) Clusters chats (HDBSCAN over L2-normalized embeddings ≈ cosine distance),
    falling back to KMeans if HDBSCAN yields nothing useful.
@@ -196,6 +197,12 @@ def main() -> int:
         default=1,
         help="How many embedding batches to process and upload concurrently.",
     )
+    p.add_argument(
+        "--conversation-word-limit",
+        type=int,
+        default=250,
+        help="Maximum number of words extracted per conversation for embeddings (0 = entire conversation).",
+    )
 
     args = p.parse_args()
 
@@ -213,6 +220,7 @@ def main() -> int:
         limit=args.limit,
         embedding_batch_words=args.embedding_batch_words,
         embedding_batch_parallelism=args.embedding_batch_parallelism,
+        conversation_word_limit=args.conversation_word_limit,
     )
 
 

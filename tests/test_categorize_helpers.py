@@ -6,6 +6,7 @@ import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -14,7 +15,7 @@ import GptCategorize.categorize as categorize
 from GptCategorize.categorize import (
     Chat,
     _detect_projectish,
-    _first_user_prompt,
+    _conversation_excerpt,
     cluster_text_cohesion,
     cosine_to_euclid_eps,
     extract_chats_from_json_blob,
@@ -55,14 +56,14 @@ def test_detect_projectish_scans_nested_fields() -> None:
     assert _detect_projectish({}) is None
 
 
-def test_first_user_prompt_prefers_oldest_and_truncates() -> None:
-    """The first user prompt should pick the earliest user message."""
+def test_conversation_excerpt_orders_and_truncates() -> None:
+    """Conversation excerpts should order messages and respect ``max_words``."""
 
     conversation = {
         "messages": [
             {
                 "author": {"role": "assistant"},
-                "content": {"parts": ["Assistant reply"]},
+                "content": {"parts": ["Assistant reply offering help"]},
                 "create_time": 150,
             },
             {
@@ -86,11 +87,12 @@ def test_first_user_prompt_prefers_oldest_and_truncates() -> None:
         },
     }
 
-    result = _first_user_prompt(conversation, max_words=5)
-    assert result == "Earliest user message with enough"
+    result = _conversation_excerpt(conversation, max_words=12)
+    # Earliest user message should be first, followed by assistant reply, both truncated
+    assert result == "User: Earliest user message with enough words to truncate\n\nAssistant: Assistant reply"
 
 
-def test_first_user_prompt_handles_alternate_shapes() -> None:
+def test_conversation_excerpt_handles_alternate_shapes() -> None:
     """Content stored under ``text`` or as a string should be considered."""
 
     conversation = {
@@ -101,7 +103,180 @@ def test_first_user_prompt_handles_alternate_shapes() -> None:
         ]
     }
 
-    assert _first_user_prompt(conversation) == "String message"
+    assert _conversation_excerpt(conversation) == "User: String message\n\nUser: Dict text"
+
+
+def test_conversation_excerpt_skips_system_and_thinking_messages() -> None:
+    """System, search, and thinking messages should be excluded from excerpts."""
+
+    conversation = {
+        "messages": [
+            {
+                "author": {"role": "system"},
+                "content": {"parts": ["System greeting"]},
+                "create_time": 10,
+            },
+            {
+                "author": {"role": "assistant"},
+                "content": {"parts": ["Visible assistant reply"]},
+                "create_time": 20,
+            },
+            {
+                "author": {"role": "assistant"},
+                "content": {
+                    "parts": [
+                        {"content_type": "thinking", "text": "Hidden thinking"},
+                        {"content_type": "text", "text": "Main answer"},
+                    ]
+                },
+                "create_time": 30,
+                "metadata": {"message_type": "assistant_response"},
+            },
+            {
+                "author": {"role": "tool"},
+                "content": {"parts": ["Tool output"]},
+                "create_time": 40,
+            },
+            {
+                "author": {"role": "assistant"},
+                "content": {"parts": [{"content_type": "tether_browsing_result", "text": "Search"}]},
+                "create_time": 50,
+                "metadata": {"message_type": "web_search_result"},
+            },
+            {
+                "author": {"role": "user"},
+                "content": {"parts": ["User follow-up"]},
+                "create_time": 60,
+            },
+        ]
+    }
+
+    result = _conversation_excerpt(conversation, max_words=0)
+    assert result == "Assistant: Visible assistant reply\n\nAssistant: Main answer\n\nUser: User follow-up"
+
+
+def test_first_user_prompt_alias_matches_conversation_excerpt() -> None:
+    """The legacy helper should return the same value as the new excerpt helper."""
+
+    conversation = {
+        "messages": [
+            {"author": {"role": "user"}, "content": {"parts": ["Hello there"]}},
+            {"author": {"role": "assistant"}, "content": {"parts": ["Hi"]}},
+        ]
+    }
+
+    assert categorize._first_user_prompt(conversation) == _conversation_excerpt(conversation)
+
+
+def test_extract_text_parts_handles_various_inputs() -> None:
+    """Edge shapes should either return text fragments or an empty list."""
+
+    assert categorize._extract_text_parts(None) == []
+    assert categorize._extract_text_parts(123) == []
+    assert categorize._extract_text_parts([" first ", {"text": " second "}]) == ["first", "second"]
+    assert categorize._extract_text_parts({"data": {"code": "print(1)", "text": "extra"}}) == ["print(1)", "extra"]
+
+
+def test_message_text_if_allowed_filters_metadata_and_types() -> None:
+    """Metadata flags and message types should prevent inclusion."""
+
+    base_message = {
+        "id": "msg-1",
+        "author": {"role": "assistant"},
+        "content": {"parts": [" Visible reply "]},
+    }
+
+    assert categorize._message_text_if_allowed(base_message) == "Assistant: Visible reply"
+
+    thinking = dict(base_message)
+    thinking["metadata"] = {"is_thinking": True}
+    assert categorize._message_text_if_allowed(thinking) is None
+
+    web_search = dict(base_message)
+    web_search["metadata"] = {"message_type": "web_search_result"}
+    assert categorize._message_text_if_allowed(web_search) is None
+
+    system_type = dict(base_message)
+    system_type["message_type"] = "system-broadcast"
+    assert categorize._message_text_if_allowed(system_type) is None
+
+
+def test_message_text_if_allowed_strips_blank_fragments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whitespace-only fragments should be discarded."""
+
+    message = {
+        "id": "blank",
+        "author": {"role": "assistant"},
+        "content": {"parts": ["ignored"]},
+    }
+
+    monkeypatch.setattr(categorize, "_extract_text_parts", lambda _content: ["   "])
+    assert categorize._message_text_if_allowed(message) is None
+
+
+def test_conversation_excerpt_skips_duplicates_and_blank_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicate message IDs and blank results should be ignored."""
+
+    conversation = {
+        "messages": [
+            {
+                "id": "dup",
+                "author": {"role": "user"},
+                "content": {"parts": ["First message"]},
+                "create_time": 10,
+            },
+            {
+                "id": "dup",
+                "author": {"role": "assistant"},
+                "content": {"parts": ["Duplicate should skip"]},
+                "create_time": 20,
+            },
+            {
+                "id": "blank",
+                "author": {"role": "assistant"},
+                "content": {"parts": ["Will become blank"]},
+                "create_time": 30,
+            },
+            {
+                "id": "keep",
+                "author": {"role": "assistant"},
+                "content": {"parts": ["Second message"]},
+                "create_time": 40,
+            },
+        ]
+    }
+
+    original = categorize._message_text_if_allowed
+
+    def fake_message_text(message: dict[str, object]) -> str | None:
+        if message.get("id") == "blank":
+            return "   "
+        return original(message)
+
+    monkeypatch.setattr(categorize, "_message_text_if_allowed", fake_message_text)
+
+    result = _conversation_excerpt(conversation, max_words=5)
+    assert result == "User: First message\n\nAssistant: Second"
+
+
+def test_conversation_excerpt_handles_invalid_limits() -> None:
+    """Non-integer limits should fall back without raising."""
+
+    conversation = {
+        "messages": [
+            {"author": {"role": "user"}, "content": {"parts": ["Hello"]}},
+        ]
+    }
+
+    assert _conversation_excerpt(conversation, max_words=cast(int, "not-a-number")) == "User: Hello"
+    assert _conversation_excerpt(conversation, max_words=-5) == "User: Hello"
+
+
+def test_conversation_excerpt_ignores_non_dict_messages() -> None:
+    """Mapping entries without dict messages are skipped."""
+
+    conversation = {"mapping": {"node": {"message": None}}, "messages": []}
+    assert _conversation_excerpt(conversation, max_words=10) is None
 
 
 def test_extract_chats_from_json_blob_converts_nested_structures() -> None:
@@ -144,13 +319,13 @@ def test_extract_chats_from_json_blob_converts_nested_structures() -> None:
     direct = next(chat for chat in chats if chat.id == "chat-1")
     assert direct.title == "Direct Chat"
     assert direct.project_id == "workspace-123"
-    assert direct.prompt_excerpt == "Hello direct chat prompt"
+    assert direct.prompt_excerpt == "User: Hello direct chat prompt"
     assert direct.create_time == pytest.approx(1_700_000_000.0)
 
     nested = next(chat for chat in chats if chat.id == "chat-2")
     assert nested.title == "Nested Chat"
     assert nested.project_id == "proj-xyz"
-    assert nested.prompt_excerpt == "Nested user prompt"
+    assert nested.prompt_excerpt == "User: Nested user prompt"
     expected_ct = datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp()
     assert nested.create_time == pytest.approx(expected_ct)
 

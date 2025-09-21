@@ -61,7 +61,7 @@ def test_categorize_chats_reports_progress(monkeypatch: pytest.MonkeyPatch, tmp_
         categorize.Chat(id="chat-b", title="Beta", prompt_excerpt="Second message"),
     ]
 
-    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path: list(chats))
+    monkeypatch.setattr(categorize, "load_chats_from_conversations_json", lambda _path, **_: list(chats))
 
     def fake_embed(_: Any, texts: Sequence[str], batch_size: int = 96) -> np.ndarray:
         assert len(texts) == len(chats)
